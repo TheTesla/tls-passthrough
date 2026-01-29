@@ -1,0 +1,24 @@
+
+services:
+  openresty:
+    image: openresty/openresty:alpine
+    container_name: sni-router
+    volumes:
+      - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./lua:/lua
+    ports:
+      - "443:443"
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:alpine
+    container_name: sni-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+
+networks:
+  default:
+    name: sni-net
+
