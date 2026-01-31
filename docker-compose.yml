@@ -3,6 +3,8 @@ services:
   openresty:
     image: openresty/openresty:alpine
     container_name: sni-router
+    cap_add:
+      - NET_ADMIN        # ← erlaubt ip route & iptables
     volumes:
       - ./nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
       - ./lua:/lua
@@ -10,6 +12,21 @@ services:
       - "443:443"
     depends_on:
       - redis
+    sysctls:
+      - net.ipv4.ip_forward=1
+    security_opt:
+      - apparmor:unconfined   # manchmal nötig auf Ubuntu/Debian Hosts
+    command: >
+      sh -c "
+        ip route add 10.200.0.0/24 via 172.42.0.3 &&
+        #iptables -A FORWARD -j ACCEPT &&
+        #iptables -t nat -A POSTROUTING -s 10.200.0.0/24 -o eth1 -j MASQUERADE &&
+        openresty -g 'daemon off;'
+      "
+    networks:
+      vpnnet:
+        ipv4_address: 172.42.0.2
+      default: {}
 
   redis:
     image: redis:alpine
@@ -17,8 +34,39 @@ services:
     ports:
       - "6379:6379"
     command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - default
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - TZ=Europe/Berlin
+    volumes:
+      - ./config:/config
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.ip_forward=1
+    restart: unless-stopped
+    networks:
+      vpnnet:
+        ipv4_address: 172.42.0.3
+      default: {}
+
+
 
 networks:
   default:
     name: sni-net
+  vpnnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.42.0.0/24
+
+
 
