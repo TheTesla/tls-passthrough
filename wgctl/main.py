@@ -3,8 +3,11 @@
 
 import subprocess as sp
 import tempfile
+import redis
 
+r = redis.Redis(host="172.25.0.2", port=6379, decode_responses=True)
 
+peers_from_redis = r.hgetall("vpn:wg0:peers")
 
 def run(cli, input=None):
     return sp.check_output(cli, input=input)
@@ -43,9 +46,13 @@ conf = {"interface": \
             "endpoint": "127.0.0.1:51820", \
             "keepalive": 24}]}
 
+peers_conf = [{"pubkey": k, "allowed_ips": [v], "endpoint": "127.0.0.1:51820", "keepalive": 24} for k, v in peers_from_redis.items()]
+
+conf["peers"] = peers_conf
 
 data = conf_dict2str(conf)
 
+print(data)
 
 print(wg_syncconf("wg0", data))
 
