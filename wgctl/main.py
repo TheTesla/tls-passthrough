@@ -5,9 +5,6 @@ import subprocess as sp
 import tempfile
 import redis
 
-r = redis.Redis(host="172.25.0.2", port=6379, decode_responses=True)
-
-peers_from_redis = r.hgetall("vpn:wg0:peers")
 
 def run(cli, input=None):
     return sp.check_output(cli, input=input)
@@ -37,22 +34,24 @@ def conf_dict2str(conf_dict):
         """ for peer in peers_list])
     return conf_str
 
-conf = {"interface": \
-           {"port": 38661, \
-            "privkey": "eEc9VXVYwIiCjnKU3iPKud4Iv3G0BJI/cidoHAlRyV8="}, \
-        "peers": [ \
-           {"pubkey": "5834NbTrZiSHAk2ti8aYTm/9nCaZ+qJ43dMtLjL9tyk=", \
-            "allowed_ips": ["10.200.0.0/24", "172.42.0.2/32"], \
-            "endpoint": "127.0.0.1:51820", \
-            "keepalive": 24}]}
 
-peers_conf = [{"pubkey": k, "allowed_ips": [v], "endpoint": "127.0.0.1:51820", "keepalive": 24} for k, v in peers_from_redis.items()]
+def sync(c, privkey):
+    conf = {}
+    r = redis.Redis(host=c["redis_host"], port=c["redis_port"], decode_responses=True)
+    peers_from_redis = r.hgetall("vpn:wg0:peers")
+    peers_conf = [{"pubkey": k, "allowed_ips": [v], "endpoint": c["endpoint"], "keepalive": 24} for k, v in peers_from_redis.items()]
+    conf["interface"] = {"port": c["redis_port"], "privkey": privkey}
+    conf["peers"] = peers_conf
+    data = conf_dict2str(conf)
+    print(wg_syncconf("wg0", data))
 
-conf["peers"] = peers_conf
 
-data = conf_dict2str(conf)
+if __name__ == "__main__":
+    privkey = "eEc9VXVYwIiCjnKU3iPKud4Iv3G0BJI/cidoHAlRyV8="
+    config = {"redis_host": "172.25.0.2", \
+              "redis_port": 6379, \
+              "interface_port": 38661, \
+              "endpoint": "127.0.0.1:51820"}
+    sync(config, privkey)
 
-print(data)
-
-print(wg_syncconf("wg0", data))
 
