@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7
+
+  api:
+    build: ./app
+    environment:
+      REDIS_HOST: redis
+      JWT_SECRET: supersecret
+      GITHUB_CLIENT_ID: Ov23lixvbwKNrhwMemGF
+      GITHUB_CLIENT_SECRET: 
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
