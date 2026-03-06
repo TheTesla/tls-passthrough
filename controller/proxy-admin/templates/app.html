@@ -899,15 +899,16 @@
           <div class="table-title">Backend-Router</div>
           <input class="search-input" type="search" placeholder="Suchen…" oninput="filterTable('routers-body', this.value, [0,1])">
           <div class="spacer"></div>
-          <button class="btn btn-primary btn-sm admin-only" onclick="openModal('router')">+ Neuer Router</button>
+          <button class="btn btn-primary btn-sm" onclick="openModal_router_new()">+ Neuer Router</button>
         </div>
         <table>
           <thead>
             <tr>
               <th>Name</th>
               <th>Beschreibung</th>
+              <th>WireGuard Key</th>
               <th>IP-Adresse</th>
-              <th>Port / Protokoll</th>
+              <th>Port / Proto</th>
               <th>Domains</th>
               <th>Status</th>
               <th>Aktionen</th>
@@ -922,23 +923,58 @@
 
     <!-- Internal IPs -->
     <div class="page" id="page-ips">
+      <!-- Admin: Network Config Panel -->
+      <div id="network-config-panel" class="table-wrap admin-only" style="margin-bottom:16px">
+        <div class="table-header">
+          <div class="table-title">Netzwerk-Konfiguration</div>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" id="config-edit-btn" onclick="openConfigEdit()">✎ Bearbeiten</button>
+        </div>
+        <div style="padding:16px 20px;display:flex;gap:32px;flex-wrap:wrap" id="config-display">
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">IP-Pool</div>
+            <div style="font-family:var(--mono);color:var(--accent);margin-top:4px" id="cfg-range">–</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Router-Subnetz</div>
+            <div style="font-family:var(--mono);color:var(--accent);margin-top:4px" id="cfg-prefix">–</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Belegt</div>
+            <div style="font-family:var(--mono);color:var(--green);margin-top:4px" id="cfg-free">–</div>
+          </div>
+        </div>
+        <div style="padding:0 20px 16px;display:none;gap:12px;align-items:flex-end" id="config-edit-form">
+          <div class="form-group" style="margin:0;flex:1">
+            <label class="form-label">IP-Pool (CIDR)</label>
+            <input class="form-input" id="cfg-range-input" placeholder="10.0.0.0/9">
+          </div>
+          <div class="form-group" style="margin:0;width:160px">
+            <label class="form-label">Router-Präfix</label>
+            <input class="form-input" id="cfg-prefix-input" type="number" min="8" max="30" placeholder="28">
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="saveConfig()" style="margin-bottom:0">Speichern</button>
+          <button class="btn btn-ghost btn-sm" onclick="closeConfigEdit()" style="margin-bottom:0">Abbrechen</button>
+        </div>
+      </div>
+
       <div class="table-wrap">
         <div class="table-header">
-          <div class="table-title">Interne IP-Adressen</div>
+          <div class="table-title">Allozierte IPs</div>
           <input class="search-input" type="search" placeholder="Suchen…" oninput="filterTable('ips-body', this.value, [0,1,2])">
           <div class="spacer"></div>
-          <button class="btn btn-primary btn-sm admin-only" onclick="openModal('ip')">+ Neue IP</button>
+          <button class="btn btn-ghost btn-sm admin-only" onclick="openModal('ip')">+ Manuell</button>
         </div>
         <table>
           <thead>
             <tr>
               <th>Label</th>
               <th>IP-Adresse</th>
-              <th>Hostname</th>
-              <th>Beschreibung</th>
-              <th>Genutzt von</th>
+              <th>Subnetz</th>
+              <th>Router</th>
+              <th>Typ</th>
               <th>Status</th>
-              <th>Aktionen</th>
+              <th class="admin-only">Aktionen</th>
             </tr>
           </thead>
           <tbody id="ips-body">
@@ -962,7 +998,8 @@
               <th>Name</th>
               <th>E-Mail</th>
               <th>Rolle</th>
-              <th>Quota</th>
+              <th>Domain-Quota</th>
+              <th>Router-Quota</th>
               <th>Status</th>
               <th>Letzter Login</th>
               <th>Aktionen</th>
@@ -1064,17 +1101,16 @@
       <input type="hidden" id="router-edit-id">
       <div class="form-group">
         <label class="form-label">Name <span class="req">*</span></label>
-        <input class="form-input" id="router-name" placeholder="z.B. backend-web-01" autocomplete="off">
+        <input class="form-input" id="router-name" placeholder="z.B. mein-server" autocomplete="off">
       </div>
       <div class="form-group">
         <label class="form-label">Beschreibung</label>
         <input class="form-input" id="router-desc" placeholder="Optional">
       </div>
       <div class="form-group">
-        <label class="form-label">Interne IP</label>
-        <select class="form-select" id="router-ip">
-          <option value="">— keine IP —</option>
-        </select>
+        <label class="form-label">WireGuard Public Key</label>
+        <input class="form-input" id="router-wg-key" placeholder="Base64-kodierter Public Key (44 Zeichen)" autocomplete="off" style="font-size:11px">
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">Generiere mit: <code style="color:var(--accent)">wg genkey | tee privatekey | wg pubkey</code></div>
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -1097,6 +1133,16 @@
           <input type="checkbox" id="router-active" checked>
           <span class="toggle-slider"></span>
         </label>
+      </div>
+      <!-- Admin-only: IP assignment -->
+      <div id="router-ip-section" style="display:none;border-top:1px solid var(--border);padding-top:14px;margin-top:4px">
+        <div style="font-size:10px;color:var(--accent);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Admin: IP-Zuordnung</div>
+        <div class="form-group">
+          <label class="form-label">Interne IP</label>
+          <select class="form-select" id="router-ip">
+            <option value="">— keine IP —</option>
+          </select>
+        </div>
       </div>
     </div>
     <div class="modal-foot">
@@ -1157,12 +1203,18 @@
     </div>
     <div class="modal-body">
       <input type="hidden" id="quota-user-id">
-      <div class="form-group">
-        <label class="form-label">Maximale Domains <span style="color:var(--muted)">(0 = unbegrenzt)</span></label>
-        <input class="form-input" id="quota-value" type="number" min="0" max="9999" value="10">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Max. Domains <span style="color:var(--muted)">(0 = ∞)</span></label>
+          <input class="form-input" id="quota-domains" type="number" min="0" max="9999" value="10">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max. Router <span style="color:var(--muted)">(0 = ∞)</span></label>
+          <input class="form-input" id="quota-routers" type="number" min="0" max="9999" value="5">
+        </div>
       </div>
       <div class="dns-box" style="font-size:11px;color:var(--text2)">
-        Admins haben immer unbegrenzte Domains, unabhängig von der Quota.
+        Admins haben immer unbegrenzte Ressourcen.
       </div>
     </div>
     <div class="modal-foot">
@@ -1307,6 +1359,7 @@ async function syncAll() {
     state.ips = data.internal_ips;
     state.users = data.users;
     state.currentUser = data.current_user;
+    state.config = data.network_config;
     renderAll();
     dot.classList.remove('loading');
     label.textContent = 'Synchronisiert · ' + new Date().toLocaleTimeString('de-DE');
@@ -1339,9 +1392,11 @@ function setupUser() {
   document.getElementById('sidebar-username').textContent = u.github_login;
   document.getElementById('sidebar-role').textContent = u.is_admin ? 'Admin' : 'Nutzer';
   if (!u.is_admin) {
-    const domainCount = state.domains.filter(d => d.owner_id === u.id).length;
-    const q = u.domain_quota === 0 ? '∞' : u.domain_quota;
-    document.getElementById('sidebar-quota').textContent = `${domainCount}/${q} Domains`;
+    const _dc = state.domains.filter(d => d.owner_id === u.id).length;
+    const _dq = u.domain_quota === 0 ? '∞' : u.domain_quota;
+    const _rc = state.routers.filter(r => r.owner_id === u.id).length;
+    const _rq = u.router_quota === 0 ? '∞' : u.router_quota;
+    document.getElementById('sidebar-quota').textContent = `D:${_dc}/${_dq} · R:${_rc}/${_rq}`;
   }
 
   if (u.is_admin) {
@@ -1450,22 +1505,37 @@ function ownerLogin(owner_id) {
 // ─────────────────────────────────────────────────────────────────────────────
 function renderRouters() {
   const tbody = document.getElementById('routers-body');
+  const uid = state.currentUser?.id;
   const isAdmin = state.currentUser?.is_admin;
   if (!state.routers.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">⬡</div><div class="empty-text">Keine Router vorhanden</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">⬡</div><div class="empty-text">Keine Router vorhanden</div></div></td></tr>`;
     return;
   }
   tbody.innerHTML = state.routers.map(r => {
     const ip = r.ip_address;
     const domainCount = state.domains.filter(d => d.backend_router_id === r.id).length;
+    const canModify = isAdmin || r.owner_id === uid;
+    const wgKey = r.wireguard_public_key
+      ? `<span style="font-family:var(--mono);font-size:10px;color:var(--accent)">${esc(r.wireguard_public_key.slice(0,16))}…</span>`
+      : '<span style="color:var(--muted)">–</span>';
+    const editBtns = canModify
+      ? `<div class="actions">
+           <button class="btn btn-ghost btn-sm" onclick="editRouter(${r.id})">✎</button>
+           <button class="btn btn-danger btn-sm" onclick="deleteRouter(${r.id})">✕</button>
+         </div>`
+      : '<span style="color:var(--muted);font-size:11px">–</span>';
     return `<tr>
-      <td><div class="cell-main">${esc(r.name)}</div></td>
+      <td>
+        <div class="cell-main">${esc(r.name)}</div>
+        ${r.owner_id ? `<div class="cell-sub">${esc(ownerLogin(r.owner_id))}</div>` : ''}
+      </td>
       <td><div style="color:var(--text2);font-size:11px">${esc(r.description || '–')}</div></td>
+      <td>${wgKey}</td>
       <td>${ip ? `<span class="badge-ip">${esc(ip.ip_address)}</span><div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(ip.label)}</div>` : '<span style="color:var(--muted)">–</span>'}</td>
       <td><span class="badge-proto">${esc(r.protocol)}</span> <span style="color:var(--text2)">${r.port}</span></td>
-      <td><span style="color:var(--text2)">${domainCount} Domain${domainCount !== 1 ? 's' : ''}</span></td>
+      <td><span style="color:var(--text2)">${domainCount}</span></td>
       <td>${statusBadge(r.is_active)}</td>
-      <td>${actionBtns(`editRouter(${r.id})`, `deleteRouter(${r.id})`, isAdmin)}</td>
+      <td>${editBtns}</td>
     </tr>`;
   }).join('');
 }
@@ -1477,21 +1547,33 @@ function renderIPs() {
   const tbody = document.getElementById('ips-body');
   const isAdmin = state.currentUser?.is_admin;
   if (!state.ips.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">◌</div><div class="empty-text">Keine IP-Adressen vorhanden</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">◌</div><div class="empty-text">Noch keine IPs alloziert</div></div></td></tr>`;
     return;
   }
   tbody.innerHTML = state.ips.map(ip => {
-    const routerCount = state.routers.filter(r => r.ip_address_id === ip.id).length;
+    const router = state.routers.find(r => r.ip_address_id === ip.id);
+    const typeBadge = ip.auto_allocated
+      ? '<span style="font-size:10px;padding:2px 7px;border-radius:20px;background:var(--accent-dim);color:var(--accent)">Auto</span>'
+      : '<span style="font-size:10px;padding:2px 7px;border-radius:20px;background:var(--surface2);color:var(--muted)">Manuell</span>';
     return `<tr>
       <td><div class="cell-main">${esc(ip.label)}</div></td>
       <td><span class="badge-ip">${esc(ip.ip_address)}</span></td>
-      <td><div style="color:var(--text2);font-size:11px">${esc(ip.hostname || '–')}</div></td>
-      <td><div style="color:var(--text2);font-size:11px">${esc(ip.description || '–')}</div></td>
-      <td><span style="color:var(--text2)">${routerCount} Router</span></td>
+      <td><span style="font-family:var(--mono);font-size:11px;color:var(--text2)">${esc(ip.subnet || '–')}</span></td>
+      <td>${router ? `<span class="badge-proto">${esc(router.name)}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${typeBadge}</td>
       <td>${statusBadge(ip.is_active)}</td>
-      <td>${actionBtns(`editIP(${ip.id})`, `deleteIP(${ip.id})`, isAdmin)}</td>
+      <td class="admin-only">${isAdmin ? actionBtns(`editIP(${ip.id})`, `deleteIP(${ip.id})`, true) : ''}</td>
     </tr>`;
   }).join('');
+  // Update config display
+  if (state.config) {
+    document.getElementById('cfg-range').textContent = state.config.ip_range;
+    document.getElementById('cfg-prefix').textContent = '/' + state.config.router_prefix;
+    // Estimate free subnets
+    const used = state.ips.filter(i => i.subnet && i.auto_allocated).length;
+    // rough estimate without full subnet math
+    document.getElementById('cfg-free').textContent = (state.config.ip_range ? (used + ' belegt') : '–');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1507,13 +1589,17 @@ function renderUsers() {
   tbody.innerHTML = state.users.map(u => {
     const isSelf = u.id === state.currentUser?.id;
     const domainCount = state.domains.filter(d => d.owner_id === u.id).length;
-    const quotaDisplay = u.domain_quota === 0
+    const domainQuota = u.domain_quota === 0
       ? `<span style="color:var(--green)">${domainCount} / ∞</span>`
       : `<span style="${domainCount >= u.domain_quota ? 'color:var(--accent2)' : 'color:var(--text2)'}">${domainCount} / ${u.domain_quota}</span>`;
+    const routerCount = state.routers.filter(r => r.owner_id === u.id).length;
+    const routerQuota = u.router_quota === 0
+      ? `<span style="color:var(--green)">${routerCount} / ∞</span>`
+      : `<span style="${routerCount >= u.router_quota ? 'color:var(--accent2)' : 'color:var(--text2)'}">${routerCount} / ${u.router_quota}</span>`;
 
     const editBtns = isAdmin ? `<div class="actions">
       ${!isSelf ? `<button class="btn btn-ghost btn-sm" onclick="toggleAdmin(${u.id}, ${u.is_admin})">${u.is_admin ? '↓ Admin' : '↑ Admin'}</button>` : ''}
-      <button class="btn btn-ghost btn-sm" onclick="openQuotaModal(${u.id}, ${u.domain_quota})">Quota</button>
+      <button class="btn btn-ghost btn-sm" onclick="openQuotaModal(${u.id}, ${u.domain_quota}, ${u.router_quota})">Quota</button>
       ${!isSelf ? `<button class="btn btn-ghost btn-sm" onclick="toggleActive(${u.id}, ${u.is_active})">${u.is_active ? 'Sperren' : 'Aktivieren'}</button>` : ''}
       ${!isSelf ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">✕</button>` : ''}
     </div>` : `<span style="color:var(--muted);font-size:11px">${isSelf ? '(du)' : '–'}</span>`;
@@ -1529,7 +1615,8 @@ function renderUsers() {
       <td><div style="color:var(--text2);font-size:12px">${esc(u.github_name || '–')}</div></td>
       <td><div style="color:var(--text2);font-size:11px">${esc(u.email || '–')}</div></td>
       <td>${u.is_admin ? '<span class="badge-admin">Admin</span>' : '<span style="color:var(--muted);font-size:11px">Nutzer</span>'}</td>
-      <td>${quotaDisplay}</td>
+      <td>${domainQuota}</td>
+      <td>${routerQuota}</td>
       <td>${statusBadge(u.is_active)}</td>
       <td><div style="color:var(--text2);font-size:11px">${login}</div></td>
       <td>${editBtns}</td>
@@ -1621,42 +1708,57 @@ async function deleteDomain(id) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Router CRUD
 // ─────────────────────────────────────────────────────────────────────────────
-function editRouter(id) {
-  const r = state.routers.find(x => x.id === id);
-  if (!r) return;
-  document.getElementById('modal-router-title').textContent = 'Router bearbeiten';
-  document.getElementById('router-edit-id').value = r.id;
-  document.getElementById('router-name').value = r.name;
-  document.getElementById('router-desc').value = r.description || '';
-  document.getElementById('router-ip').value = r.ip_address_id || '';
-  document.getElementById('router-port').value = r.port;
-  document.getElementById('router-protocol').value = r.protocol;
-  document.getElementById('router-active').checked = r.is_active;
+function _showRouterModal(r) {
+  const isAdmin = state.currentUser?.is_admin;
+  document.getElementById('router-ip-section').style.display = isAdmin ? '' : 'none';
+  if (r) {
+    document.getElementById('modal-router-title').textContent = 'Router bearbeiten';
+    document.getElementById('router-edit-id').value = r.id;
+    document.getElementById('router-name').value = r.name;
+    document.getElementById('router-desc').value = r.description || '';
+    document.getElementById('router-wg-key').value = r.wireguard_public_key || '';
+    document.getElementById('router-port').value = r.port;
+    document.getElementById('router-protocol').value = r.protocol;
+    document.getElementById('router-active').checked = r.is_active;
+    if (isAdmin) document.getElementById('router-ip').value = r.ip_address_id || '';
+  } else {
+    document.getElementById('modal-router-title').textContent = 'Neuer Router';
+    document.getElementById('router-edit-id').value = '';
+    document.getElementById('router-name').value = '';
+    document.getElementById('router-desc').value = '';
+    document.getElementById('router-wg-key').value = '';
+    document.getElementById('router-port').value = 443;
+    document.getElementById('router-protocol').value = 'https';
+    document.getElementById('router-active').checked = true;
+    if (isAdmin) document.getElementById('router-ip').value = '';
+  }
   openModal('router');
 }
 
+function editRouter(id) {
+  const r = state.routers.find(x => x.id === id);
+  if (r) _showRouterModal(r);
+}
+
 function openModal_router_new() {
-  document.getElementById('modal-router-title').textContent = 'Neuer Backend-Router';
-  document.getElementById('router-edit-id').value = '';
-  document.getElementById('router-name').value = '';
-  document.getElementById('router-desc').value = '';
-  document.getElementById('router-ip').value = '';
-  document.getElementById('router-port').value = 443;
-  document.getElementById('router-protocol').value = 'https';
-  document.getElementById('router-active').checked = true;
-  openModal('router');
+  _showRouterModal(null);
 }
 
 async function saveRouter() {
   const id = document.getElementById('router-edit-id').value;
+  const isAdmin = state.currentUser?.is_admin;
   const body = {
     name: document.getElementById('router-name').value.trim(),
     description: document.getElementById('router-desc').value.trim() || null,
-    ip_address_id: document.getElementById('router-ip').value ? parseInt(document.getElementById('router-ip').value) : null,
+    wireguard_public_key: document.getElementById('router-wg-key').value.trim() || null,
     port: parseInt(document.getElementById('router-port').value),
     protocol: document.getElementById('router-protocol').value,
     is_active: document.getElementById('router-active').checked,
   };
+  if (isAdmin) {
+    body.ip_address_id = document.getElementById('router-ip').value
+      ? parseInt(document.getElementById('router-ip').value) : null;
+  }
   try {
     if (id) {
       const updated = await api('PUT', `/routers/${id}`, body);
@@ -1827,25 +1929,60 @@ function esc(s) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Network Config
+// ─────────────────────────────────────────────────────────────────────────────
+function openConfigEdit() {
+  const cfg = state.config;
+  if (!cfg) return;
+  document.getElementById('cfg-range-input').value = cfg.ip_range;
+  document.getElementById('cfg-prefix-input').value = cfg.router_prefix;
+  document.getElementById('config-display').style.display = 'none';
+  document.getElementById('config-edit-form').style.display = 'flex';
+  document.getElementById('config-edit-btn').style.display = 'none';
+}
+
+function closeConfigEdit() {
+  document.getElementById('config-display').style.display = '';
+  document.getElementById('config-edit-form').style.display = 'none';
+  document.getElementById('config-edit-btn').style.display = '';
+}
+
+async function saveConfig() {
+  const body = {
+    ip_range: document.getElementById('cfg-range-input').value.trim(),
+    router_prefix: parseInt(document.getElementById('cfg-prefix-input').value),
+  };
+  try {
+    const updated = await api('PUT', '/config', body);
+    state.config = updated;
+    closeConfigEdit();
+    renderIPs();
+    toast('Netzwerk-Konfiguration gespeichert');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Quota management
 // ─────────────────────────────────────────────────────────────────────────────
-function openQuotaModal(userId, currentQuota) {
+function openQuotaModal(userId, domainQuota, routerQuota) {
   document.getElementById('quota-user-id').value = userId;
-  document.getElementById('quota-value').value = currentQuota;
+  document.getElementById('quota-domains').value = domainQuota;
+  document.getElementById('quota-routers').value = routerQuota;
   openModal('quota');
 }
 
 async function saveQuota() {
   const id = document.getElementById('quota-user-id').value;
-  const quota = parseInt(document.getElementById('quota-value').value);
-  if (isNaN(quota) || quota < 0) { toast('Ungültige Quota', 'error'); return; }
+  const dq = parseInt(document.getElementById('quota-domains').value);
+  const rq = parseInt(document.getElementById('quota-routers').value);
+  if (isNaN(dq) || dq < 0 || isNaN(rq) || rq < 0) { toast('Ungültige Quota', 'error'); return; }
   try {
-    const updated = await api('PUT', `/users/${id}`, { domain_quota: quota });
+    const updated = await api('PUT', `/users/${id}`, { domain_quota: dq, router_quota: rq });
     const idx = state.users.findIndex(x => x.id === parseInt(id));
     if (idx !== -1) state.users[idx] = updated;
     closeModal('quota');
     renderUsers();
-    toast(`Quota auf ${quota === 0 ? '∞' : quota} gesetzt`);
+    toast('Quota gespeichert');
   } catch(e) { toast(e.message, 'error'); }
 }
 

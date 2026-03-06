@@ -1,3 +1,4 @@
+import ipaddress
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
@@ -5,23 +6,75 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db, User, SNIDomain, BackendRouter, InternalIP, VerificationStatus
+from models.database import get_db, User, SNIDomain, BackendRouter, InternalIP, NetworkConfig, VerificationStatus
 from models.schemas import (
     SNIDomainCreate, SNIDomainUpdate, SNIDomainOut, VerifyResult,
-    BackendRouterCreate, BackendRouterUpdate, BackendRouterOut,
+    BackendRouterCreate, BackendRouterUpdate, BackendRouterAdminUpdate, BackendRouterOut,
     InternalIPCreate, InternalIPUpdate, InternalIPOut,
     UserOut, UserUpdate, FullSync,
+    NetworkConfigOut, NetworkConfigUpdate,
 )
 from routers.auth import require_user, require_admin
 
 api_router = APIRouter(prefix="/api", tags=["api"])
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── IP allocation helpers ─────────────────────────────────────────────────────
+
+async def _get_config(db: AsyncSession) -> NetworkConfig:
+    result = await db.execute(select(NetworkConfig).where(NetworkConfig.id == 1))
+    cfg = result.scalar_one_or_none()
+    if not cfg:
+        cfg = NetworkConfig(id=1, ip_range="10.0.0.0/9", router_prefix=28)
+        db.add(cfg)
+        await db.commit()
+        await db.refresh(cfg)
+    return cfg
+
+
+async def _allocate_ip(db: AsyncSession, cfg: NetworkConfig, label: str, created_by_id: int) -> InternalIP:
+    """Carve the next free subnet from the pool and create an InternalIP record."""
+    pool = ipaddress.ip_network(cfg.ip_range, strict=True)
+    prefix = cfg.router_prefix
+
+    if prefix <= pool.prefixlen:
+        raise HTTPException(400, f"Router-Präfix /{prefix} ist nicht kleiner als Pool-Präfix /{pool.prefixlen}")
+
+    # Collect all already-allocated subnets
+    used_q = await db.execute(
+        select(InternalIP.subnet).where(InternalIP.subnet.is_not(None))
+    )
+    used_subnets = {row[0] for row in used_q.fetchall()}
+
+    # Find first free subnet
+    for subnet in pool.subnets(new_prefix=prefix):
+        subnet_str = str(subnet)
+        if subnet_str not in used_subnets:
+            first_host = str(list(subnet.hosts())[0])
+            ip = InternalIP(
+                label=label,
+                subnet=subnet_str,
+                ip_address=first_host,
+                auto_allocated=True,
+                is_active=True,
+                created_by_id=created_by_id,
+                description=f"Auto-alloziert aus {cfg.ip_range} (/{prefix})",
+            )
+            db.add(ip)
+            await db.flush()  # get ip.id without committing
+            return ip
+
+    raise HTTPException(503, f"Kein freies Subnetz mehr im Pool {cfg.ip_range}/{prefix}")
+
+
+# ── General helpers ───────────────────────────────────────────────────────────
 
 def _can_modify_domain(domain: SNIDomain, user: User) -> bool:
-    """Owner or admin may edit/delete a domain."""
     return user.is_admin or domain.owner_id == user.id
+
+
+def _can_modify_router(router: BackendRouter, user: User) -> bool:
+    return user.is_admin or router.owner_id == user.id
 
 
 def _domain_q():
@@ -30,11 +83,14 @@ def _domain_q():
     )
 
 
+def _router_q():
+    return select(BackendRouter).options(selectinload(BackendRouter.ip_address))
+
+
 async def _check_txt_record(domain: str, token: str) -> bool:
     try:
         import dns.resolver
-        check_name = f"_proxy-verify.{domain.lstrip('*.')}"
-        answers = dns.resolver.resolve(check_name, "TXT", lifetime=10)
+        answers = dns.resolver.resolve(f"_proxy-verify.{domain.lstrip('*.')}", "TXT", lifetime=10)
         for rdata in answers:
             for string in rdata.strings:
                 if string.decode("utf-8", errors="ignore") == token:
@@ -48,6 +104,48 @@ def _generate_token() -> str:
     return "proxy-verify=" + secrets.token_hex(24)
 
 
+async def _count_owned(db: AsyncSession, model, owner_id: int) -> int:
+    q = await db.execute(select(func.count()).select_from(model).where(model.owner_id == owner_id))
+    return q.scalar_one()
+
+
+# ── Network Config (Admin) ────────────────────────────────────────────────────
+
+@api_router.get("/config", response_model=NetworkConfigOut)
+async def get_config(current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    return NetworkConfigOut.model_validate(await _get_config(db))
+
+
+@api_router.put("/config", response_model=NetworkConfigOut)
+async def update_config(
+    body: NetworkConfigUpdate,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    cfg = await _get_config(db)
+    if body.ip_range is not None:
+        # Validate new range doesn't conflict with existing allocations
+        new_pool = ipaddress.ip_network(body.ip_range, strict=True)
+        used_q = await db.execute(
+            select(InternalIP.subnet).where(InternalIP.auto_allocated == True)
+        )
+        for row in used_q.fetchall():
+            if row[0]:
+                allocated = ipaddress.ip_network(row[0], strict=True)
+                if not allocated.subnet_of(new_pool):
+                    raise HTTPException(400,
+                        f"Bereits alloziertes Subnetz {row[0]} liegt außerhalb des neuen Pools {body.ip_range}. "
+                        "Bitte erst die betroffenen Router löschen.")
+        cfg.ip_range = body.ip_range
+    if body.router_prefix is not None:
+        cfg.router_prefix = body.router_prefix
+    cfg.updated_by_id = current_user.id
+    cfg.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(cfg)
+    return NetworkConfigOut.model_validate(cfg)
+
+
 # ── Full Sync ─────────────────────────────────────────────────────────────────
 
 @api_router.get("/sync", response_model=FullSync)
@@ -55,36 +153,35 @@ async def full_sync(
     current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    users_q = await db.execute(select(User).order_by(User.github_login))
-    sni_q = await db.execute(_domain_q().order_by(SNIDomain.domain))
-    router_q = await db.execute(
-        select(BackendRouter).options(selectinload(BackendRouter.ip_address)).order_by(BackendRouter.name)
-    )
-    ip_q = await db.execute(select(InternalIP).order_by(InternalIP.label))
+    users_q   = await db.execute(select(User).order_by(User.github_login))
+    sni_q     = await db.execute(_domain_q().order_by(SNIDomain.domain))
+    router_q  = await db.execute(_router_q().order_by(BackendRouter.name))
+    ip_q      = await db.execute(select(InternalIP).order_by(InternalIP.ip_address))
+    cfg       = await _get_config(db)
 
     return FullSync(
-        users=[UserOut.model_validate(u) for u in users_q.scalars().all()],
-        sni_domains=[SNIDomainOut.model_validate(d) for d in sni_q.scalars().all()],
-        backend_routers=[BackendRouterOut.model_validate(r) for r in router_q.scalars().all()],
-        internal_ips=[InternalIPOut.model_validate(i) for i in ip_q.scalars().all()],
-        current_user=UserOut.model_validate(current_user),
+        users=           [UserOut.model_validate(u) for u in users_q.scalars().all()],
+        sni_domains=     [SNIDomainOut.model_validate(d) for d in sni_q.scalars().all()],
+        backend_routers= [BackendRouterOut.model_validate(r) for r in router_q.scalars().all()],
+        internal_ips=    [InternalIPOut.model_validate(i) for i in ip_q.scalars().all()],
+        current_user=    UserOut.model_validate(current_user),
+        network_config=  NetworkConfigOut.model_validate(cfg),
     )
 
 
-# ── Internal IPs (Admin: write; all: read) ────────────────────────────────────
+# ── Internal IPs (Admin: manual CRUD; auto-allocation is internal) ────────────
 
 @api_router.get("/ips", response_model=list[InternalIPOut])
 async def list_ips(current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(InternalIP).order_by(InternalIP.label))
+    result = await db.execute(select(InternalIP).order_by(InternalIP.ip_address))
     return [InternalIPOut.model_validate(r) for r in result.scalars().all()]
 
 
 @api_router.post("/ips", response_model=InternalIPOut, status_code=201)
 async def create_ip(body: InternalIPCreate, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(select(InternalIP).where(InternalIP.ip_address == body.ip_address))
-    if existing.scalar_one_or_none():
+    if (await db.execute(select(InternalIP).where(InternalIP.ip_address == body.ip_address))).scalar_one_or_none():
         raise HTTPException(400, "IP-Adresse existiert bereits")
-    ip = InternalIP(**body.model_dump(), created_by_id=current_user.id)
+    ip = InternalIP(**body.model_dump(), created_by_id=current_user.id, auto_allocated=False)
     db.add(ip)
     await db.commit()
     await db.refresh(ip)
@@ -93,8 +190,7 @@ async def create_ip(body: InternalIPCreate, current_user: User = Depends(require
 
 @api_router.put("/ips/{ip_id}", response_model=InternalIPOut)
 async def update_ip(ip_id: int, body: InternalIPUpdate, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(InternalIP).where(InternalIP.id == ip_id))
-    ip = result.scalar_one_or_none()
+    ip = (await db.execute(select(InternalIP).where(InternalIP.id == ip_id))).scalar_one_or_none()
     if not ip:
         raise HTTPException(404, "IP nicht gefunden")
     for k, v in body.model_dump(exclude_unset=True).items():
@@ -107,67 +203,109 @@ async def update_ip(ip_id: int, body: InternalIPUpdate, current_user: User = Dep
 
 @api_router.delete("/ips/{ip_id}", status_code=204)
 async def delete_ip(ip_id: int, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(InternalIP).where(InternalIP.id == ip_id))
-    ip = result.scalar_one_or_none()
+    ip = (await db.execute(select(InternalIP).where(InternalIP.id == ip_id))).scalar_one_or_none()
     if not ip:
         raise HTTPException(404, "IP nicht gefunden")
+    # Check if any router still uses this IP
+    used = (await db.execute(select(BackendRouter).where(BackendRouter.ip_address_id == ip_id))).scalar_one_or_none()
+    if used:
+        raise HTTPException(400, f"IP wird noch von Router \"{used.name}\" verwendet")
     await db.delete(ip)
     await db.commit()
 
 
-# ── Backend Routers (Admin: write; all: read) ─────────────────────────────────
+# ── Backend Routers ───────────────────────────────────────────────────────────
 
 @api_router.get("/routers", response_model=list[BackendRouterOut])
 async def list_routers(current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(BackendRouter).options(selectinload(BackendRouter.ip_address)).order_by(BackendRouter.name)
-    )
+    result = await db.execute(_router_q().order_by(BackendRouter.name))
     return [BackendRouterOut.model_validate(r) for r in result.scalars().all()]
 
 
 @api_router.post("/routers", response_model=BackendRouterOut, status_code=201)
-async def create_router(body: BackendRouterCreate, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    existing = await db.execute(select(BackendRouter).where(BackendRouter.name == body.name))
-    if existing.scalar_one_or_none():
+async def create_router(body: BackendRouterCreate, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    # Quota check
+    if not current_user.is_admin and current_user.router_quota > 0:
+        count = await _count_owned(db, BackendRouter, current_user.id)
+        if count >= current_user.router_quota:
+            raise HTTPException(403,
+                f"Router-Quota erreicht ({count}/{current_user.router_quota}).")
+
+    if (await db.execute(select(BackendRouter).where(BackendRouter.name == body.name))).scalar_one_or_none():
         raise HTTPException(400, "Router-Name existiert bereits")
-    r = BackendRouter(**body.model_dump(), created_by_id=current_user.id)
-    db.add(r)
-    await db.commit()
-    result = await db.execute(
-        select(BackendRouter).options(selectinload(BackendRouter.ip_address)).where(BackendRouter.id == r.id)
+
+    r = BackendRouter(
+        **body.model_dump(),
+        owner_id=current_user.id,
+        created_by_id=current_user.id,
     )
+    db.add(r)
+    await db.flush()  # get r.id
+
+    # Auto-allocate an IP from the pool
+    cfg = await _get_config(db)
+    label = f"router-{r.name}"
+    ip = await _allocate_ip(db, cfg, label, current_user.id)
+    r.ip_address_id = ip.id
+
+    await db.commit()
+    result = await db.execute(_router_q().where(BackendRouter.id == r.id))
     return BackendRouterOut.model_validate(result.scalar_one())
 
 
 @api_router.put("/routers/{router_id}", response_model=BackendRouterOut)
-async def update_router(router_id: int, body: BackendRouterUpdate, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(BackendRouter).options(selectinload(BackendRouter.ip_address)).where(BackendRouter.id == router_id)
-    )
+async def update_router(
+    router_id: int,
+    body: BackendRouterAdminUpdate,
+    current_user: User = Depends(require_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(_router_q().where(BackendRouter.id == router_id))
     r = result.scalar_one_or_none()
     if not r:
         raise HTTPException(404, "Router nicht gefunden")
-    for k, v in body.model_dump(exclude_unset=True).items():
+    if not _can_modify_router(r, current_user):
+        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann diesen Router bearbeiten")
+
+    data = body.model_dump(exclude_unset=True)
+    if "ip_address_id" in data and not current_user.is_admin:
+        raise HTTPException(403, "Nur Admins dürfen die IP-Zuordnung ändern")
+
+    for k, v in data.items():
         setattr(r, k, v)
     r.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    result2 = await db.execute(
-        select(BackendRouter).options(selectinload(BackendRouter.ip_address)).where(BackendRouter.id == router_id)
-    )
+    result2 = await db.execute(_router_q().where(BackendRouter.id == router_id))
     return BackendRouterOut.model_validate(result2.scalar_one())
 
 
 @api_router.delete("/routers/{router_id}", status_code=204)
-async def delete_router(router_id: int, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(BackendRouter).where(BackendRouter.id == router_id))
-    r = result.scalar_one_or_none()
+async def delete_router(router_id: int, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
+    r = (await db.execute(select(BackendRouter).where(BackendRouter.id == router_id))).scalar_one_or_none()
     if not r:
         raise HTTPException(404, "Router nicht gefunden")
+    if not _can_modify_router(r, current_user):
+        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann diesen Router löschen")
+
+    ip_id = r.ip_address_id
     await db.delete(r)
+    await db.flush()
+
+    # Free the auto-allocated IP
+    if ip_id:
+        ip = (await db.execute(select(InternalIP).where(InternalIP.id == ip_id))).scalar_one_or_none()
+        if ip and ip.auto_allocated:
+            # Check no other router uses it
+            other = (await db.execute(
+                select(BackendRouter).where(BackendRouter.ip_address_id == ip_id)
+            )).scalar_one_or_none()
+            if not other:
+                await db.delete(ip)
+
     await db.commit()
 
 
-# ── SNI Domains (all users: full CRUD on own domains) ─────────────────────────
+# ── SNI Domains ───────────────────────────────────────────────────────────────
 
 @api_router.get("/domains", response_model=list[SNIDomainOut])
 async def list_domains(current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
@@ -177,29 +315,20 @@ async def list_domains(current_user: User = Depends(require_user), db: AsyncSess
 
 @api_router.post("/domains", response_model=SNIDomainOut, status_code=201)
 async def create_domain(body: SNIDomainCreate, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    # Check quota (0 = unlimited, admins are always unlimited)
     if not current_user.is_admin and current_user.domain_quota > 0:
-        count_q = await db.execute(
-            select(func.count()).select_from(SNIDomain).where(SNIDomain.owner_id == current_user.id)
-        )
-        current_count = count_q.scalar_one()
-        if current_count >= current_user.domain_quota:
-            raise HTTPException(
-                403,
-                f"Domain-Quota erreicht ({current_count}/{current_user.domain_quota}). "
-                "Bitte einen Admin kontaktieren."
-            )
+        count = await _count_owned(db, SNIDomain, current_user.id)
+        if count >= current_user.domain_quota:
+            raise HTTPException(403,
+                f"Domain-Quota erreicht ({count}/{current_user.domain_quota}).")
 
-    existing = await db.execute(select(SNIDomain).where(SNIDomain.domain == body.domain))
-    if existing.scalar_one_or_none():
+    if (await db.execute(select(SNIDomain).where(SNIDomain.domain == body.domain))).scalar_one_or_none():
         raise HTTPException(400, "Domain existiert bereits")
 
-    token = _generate_token()
     d = SNIDomain(
         **body.model_dump(),
         created_by_id=current_user.id,
         owner_id=current_user.id,
-        verification_token=token,
+        verification_token=_generate_token(),
         verification_status=VerificationStatus.pending.value,
     )
     db.add(d)
@@ -210,12 +339,11 @@ async def create_domain(body: SNIDomainCreate, current_user: User = Depends(requ
 
 @api_router.post("/domains/{domain_id}/verify", response_model=VerifyResult)
 async def verify_domain(domain_id: int, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))
-    d = result.scalar_one_or_none()
+    d = (await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))).scalar_one_or_none()
     if not d:
         raise HTTPException(404, "Domain nicht gefunden")
     if not _can_modify_domain(d, current_user):
-        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann diese Domain verifizieren")
+        raise HTTPException(403, "Kein Zugriff")
     if d.verification_status == VerificationStatus.verified.value:
         return VerifyResult(success=True, message="Bereits verifiziert", verification_status="verified")
 
@@ -225,8 +353,8 @@ async def verify_domain(domain_id: int, current_user: User = Depends(require_use
         d.verified_at = datetime.now(timezone.utc)
         msg = "Domain erfolgreich verifiziert!"
     else:
-        d.verification_status = VerificationStatus.failed.value
         bare = d.domain.lstrip("*.")
+        d.verification_status = VerificationStatus.failed.value
         msg = f"TXT-Record nicht gefunden. Bitte setze:\n_proxy-verify.{bare}  TXT  \"{d.verification_token}\""
     await db.commit()
     return VerifyResult(success=found, message=msg, verification_status=d.verification_status)
@@ -234,18 +362,17 @@ async def verify_domain(domain_id: int, current_user: User = Depends(require_use
 
 @api_router.post("/domains/{domain_id}/reset-token", response_model=SNIDomainOut)
 async def reset_verification_token(domain_id: int, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))
-    d = result.scalar_one_or_none()
+    d = (await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))).scalar_one_or_none()
     if not d:
         raise HTTPException(404, "Domain nicht gefunden")
     if not _can_modify_domain(d, current_user):
-        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann das Token zurücksetzen")
+        raise HTTPException(403, "Kein Zugriff")
     d.verification_token = _generate_token()
     d.verification_status = VerificationStatus.pending.value
     d.verified_at = None
     await db.commit()
-    result2 = await db.execute(_domain_q().where(SNIDomain.id == domain_id))
-    return SNIDomainOut.model_validate(result2.scalar_one())
+    result = await db.execute(_domain_q().where(SNIDomain.id == domain_id))
+    return SNIDomainOut.model_validate(result.scalar_one())
 
 
 @api_router.put("/domains/{domain_id}", response_model=SNIDomainOut)
@@ -255,7 +382,7 @@ async def update_domain(domain_id: int, body: SNIDomainUpdate, current_user: Use
     if not d:
         raise HTTPException(404, "Domain nicht gefunden")
     if not _can_modify_domain(d, current_user):
-        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann diese Domain bearbeiten")
+        raise HTTPException(403, "Nur Eigentümer oder Admin")
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(d, k, v)
     d.updated_at = datetime.now(timezone.utc)
@@ -266,17 +393,16 @@ async def update_domain(domain_id: int, body: SNIDomainUpdate, current_user: Use
 
 @api_router.delete("/domains/{domain_id}", status_code=204)
 async def delete_domain(domain_id: int, current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))
-    d = result.scalar_one_or_none()
+    d = (await db.execute(select(SNIDomain).where(SNIDomain.id == domain_id))).scalar_one_or_none()
     if not d:
         raise HTTPException(404, "Domain nicht gefunden")
     if not _can_modify_domain(d, current_user):
-        raise HTTPException(403, "Nur der Eigentümer oder ein Admin kann diese Domain löschen")
+        raise HTTPException(403, "Nur Eigentümer oder Admin")
     await db.delete(d)
     await db.commit()
 
 
-# ── Users (Admin: write; all: read own) ──────────────────────────────────────
+# ── Users (Admin only) ────────────────────────────────────────────────────────
 
 @api_router.get("/users", response_model=list[UserOut])
 async def list_users(current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
@@ -285,28 +411,24 @@ async def list_users(current_user: User = Depends(require_admin), db: AsyncSessi
 
 
 @api_router.put("/users/{user_id}", response_model=UserOut)
-async def update_user(
-    user_id: int,
-    body: UserUpdate,
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
+async def update_user(user_id: int, body: UserUpdate, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     if user_id == current_user.id and body.is_active is False:
         raise HTTPException(400, "Du kannst dich nicht selbst deaktivieren")
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "Nutzer nicht gefunden")
-
     if body.is_active is not None:
         user.is_active = body.is_active
     if body.domain_quota is not None:
         if body.domain_quota < 0:
-            raise HTTPException(400, "Quota muss >= 0 sein (0 = unbegrenzt)")
+            raise HTTPException(400, "Quota muss >= 0 sein")
         user.domain_quota = body.domain_quota
+    if body.router_quota is not None:
+        if body.router_quota < 0:
+            raise HTTPException(400, "Quota muss >= 0 sein")
+        user.router_quota = body.router_quota
     if body.is_admin is not None and user_id != current_user.id:
         user.is_admin = body.is_admin
-
     await db.commit()
     await db.refresh(user)
     return UserOut.model_validate(user)
@@ -316,8 +438,7 @@ async def update_user(
 async def delete_user(user_id: int, current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
     if user_id == current_user.id:
         raise HTTPException(400, "Du kannst dich nicht selbst löschen")
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(404, "Nutzer nicht gefunden")
     await db.delete(user)

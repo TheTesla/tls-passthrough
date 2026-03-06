@@ -25,6 +25,22 @@ class VerificationStatus(str, enum.Enum):
     failed = "failed"
 
 
+class NetworkConfig(Base):
+    """Singleton row (always id=1). Admin-managed network settings."""
+    __tablename__ = "network_config"
+
+    id = Column(Integer, primary_key=True, default=1)
+    # Full IP pool available for router allocation
+    ip_range = Column(String(18), nullable=False, default="10.0.0.0/9")
+    # Prefix length for each router's subnet (e.g. 28 → /28 = 16 IPs, 14 usable)
+    router_prefix = Column(Integer, nullable=False, default=28)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+    updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    updated_by = relationship("User", foreign_keys="NetworkConfig.updated_by_id")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -36,7 +52,8 @@ class User(Base):
     email = Column(String(200), nullable=True)
     is_admin = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
-    domain_quota = Column(Integer, default=10, nullable=False)  # max domains per user; 0 = unlimited
+    domain_quota = Column(Integer, default=10, nullable=False)
+    router_quota = Column(Integer, default=5, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime, nullable=True)
 
@@ -46,12 +63,17 @@ class InternalIP(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     label = Column(String(100), unique=True, nullable=False)
+    # The full subnet this entry represents, e.g. "10.0.0.0/28"
+    subnet = Column(String(18), nullable=True)
+    # First usable host in the subnet, e.g. "10.0.0.1" — used for routing
     ip_address = Column(String(15), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
     hostname = Column(String(253), nullable=True)
     is_active = Column(Boolean, default=True)
+    auto_allocated = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     backend_routers = relationship("BackendRouter", back_populates="ip_address")
@@ -64,17 +86,21 @@ class BackendRouter(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    wireguard_public_key = Column(String(64), nullable=True)
     ip_address_id = Column(Integer, ForeignKey("internal_ips.id"), nullable=True)
     port = Column(Integer, nullable=False, default=443)
     protocol = Column(String(10), default="https")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     ip_address = relationship("InternalIP", back_populates="backend_routers")
     sni_domains = relationship("SNIDomain", back_populates="backend_router")
     created_by = relationship("User", foreign_keys="BackendRouter.created_by_id")
+    owner = relationship("User", foreign_keys="BackendRouter.owner_id")
 
 
 class SNIDomain(Base):
@@ -87,10 +113,12 @@ class SNIDomain(Base):
     is_active = Column(Boolean, default=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     verification_token = Column(String(64), nullable=True)
-    verification_status = Column(String(10), nullable=False, default=VerificationStatus.pending.value)
+    verification_status = Column(String(10), nullable=False,
+                                 default=VerificationStatus.pending.value)
     verified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     backend_router = relationship("BackendRouter", back_populates="sni_domains")
@@ -98,15 +126,20 @@ class SNIDomain(Base):
     owner = relationship("User", foreign_keys="SNIDomain.owner_id")
 
 
-# Idempotent migrations: add columns that didn't exist in earlier schema versions
 _MIGRATIONS = [
-    ("users",       "domain_quota",         "INTEGER NOT NULL DEFAULT 10"),
-    ("sni_domains", "owner_id",             "INTEGER REFERENCES users(id)"),
-    ("sni_domains", "verification_token",   "VARCHAR(64)"),
-    ("sni_domains", "verification_status",  "VARCHAR(10) NOT NULL DEFAULT 'pending'"),
-    ("sni_domains", "verified_at",          "DATETIME"),
-    ("backend_routers", "created_by_id",    "INTEGER REFERENCES users(id)"),
-    ("internal_ips",    "created_by_id",    "INTEGER REFERENCES users(id)"),
+    # network_config is created by create_all; only column additions needed here
+    ("users",           "domain_quota",        "INTEGER NOT NULL DEFAULT 10"),
+    ("users",           "router_quota",         "INTEGER NOT NULL DEFAULT 5"),
+    ("internal_ips",    "subnet",               "VARCHAR(18)"),
+    ("internal_ips",    "auto_allocated",       "BOOLEAN NOT NULL DEFAULT 0"),
+    ("internal_ips",    "created_by_id",        "INTEGER REFERENCES users(id)"),
+    ("backend_routers", "owner_id",             "INTEGER REFERENCES users(id)"),
+    ("backend_routers", "wireguard_public_key", "VARCHAR(64)"),
+    ("backend_routers", "created_by_id",        "INTEGER REFERENCES users(id)"),
+    ("sni_domains",     "owner_id",             "INTEGER REFERENCES users(id)"),
+    ("sni_domains",     "verification_token",   "VARCHAR(64)"),
+    ("sni_domains",     "verification_status",  "VARCHAR(10) NOT NULL DEFAULT 'pending'"),
+    ("sni_domains",     "verified_at",          "DATETIME"),
 ]
 
 
@@ -117,7 +150,13 @@ async def init_db():
             try:
                 await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}"))
             except Exception:
-                pass  # column already exists
+                pass  # already exists
+        # Ensure singleton NetworkConfig row exists
+        row = await conn.execute(text("SELECT id FROM network_config WHERE id=1"))
+        if not row.fetchone():
+            await conn.execute(text(
+                "INSERT INTO network_config (id, ip_range, router_prefix) VALUES (1, '10.0.0.0/9', 28)"
+            ))
 
 
 async def get_db():
