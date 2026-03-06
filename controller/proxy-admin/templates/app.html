@@ -675,6 +675,68 @@
     }
     .avatar img { width: 100%; height: 100%; object-fit: cover; }
 
+    .badge-verified {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 8px; border-radius: 20px; font-size: 10px; font-weight: 500;
+      background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,255,135,0.2);
+    }
+    .badge-pending {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 8px; border-radius: 20px; font-size: 10px; font-weight: 500;
+      background: var(--amber-dim); color: var(--amber); border: 1px solid rgba(255,179,0,0.2);
+    }
+    .badge-failed {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 8px; border-radius: 20px; font-size: 10px; font-weight: 500;
+      background: var(--accent2-dim); color: var(--accent2); border: 1px solid rgba(255,61,107,0.2);
+    }
+
+    .dns-box {
+      background: var(--bg);
+      border: 1px solid var(--border2);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 12px;
+      line-height: 1.8;
+    }
+    .dns-record {
+      margin-top: 10px;
+      background: #000;
+      border: 1px solid var(--border2);
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--accent);
+      word-break: break-all;
+      position: relative;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 6px; right: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 4px;
+      color: var(--text2);
+      font-size: 10px;
+      padding: 2px 6px;
+      cursor: pointer;
+      font-family: var(--mono);
+      transition: all 0.15s;
+    }
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+    .verify-result {
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      display: none;
+    }
+    .verify-result.success { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,255,135,0.2); }
+    .verify-result.error { background: var(--accent2-dim); color: var(--accent2); border: 1px solid rgba(255,61,107,0.2); }
+
     /* scrollbar */
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -726,6 +788,7 @@
       <div class="user-info">
         <div class="user-name" id="sidebar-username">–</div>
         <div class="user-role" id="sidebar-role">–</div>
+        <div class="user-role" id="sidebar-quota" style="color:var(--muted)"></div>
       </div>
       <a href="/auth/logout" class="logout-btn" title="Abmelden">⏻</a>
     </div>
@@ -809,7 +872,7 @@
           <div class="table-title">SNI-Domains</div>
           <input class="search-input" type="search" placeholder="Suchen…" oninput="filterTable('domains-body', this.value, [0,1])">
           <div class="spacer"></div>
-          <button class="btn btn-primary btn-sm admin-only" onclick="openModal('domain')">+ Neue Domain</button>
+          <button class="btn btn-primary btn-sm" onclick="openModal_domain_new()">+ Neue Domain</button>
         </div>
         <table>
           <thead>
@@ -817,12 +880,13 @@
               <th>Domain</th>
               <th>Beschreibung</th>
               <th>Backend-Router</th>
+              <th>Verifizierung</th>
               <th>Status</th>
               <th>Aktionen</th>
             </tr>
           </thead>
           <tbody id="domains-body">
-            <tr><td colspan="5" class="empty-state"><div class="empty-icon">⌛</div></td></tr>
+            <tr><td colspan="6" class="empty-state"><div class="empty-icon">⌛</div></td></tr>
           </tbody>
         </table>
       </div>
@@ -898,6 +962,7 @@
               <th>Name</th>
               <th>E-Mail</th>
               <th>Rolle</th>
+              <th>Quota</th>
               <th>Status</th>
               <th>Letzter Login</th>
               <th>Aktionen</th>
@@ -914,6 +979,41 @@
 </main>
 
 <!-- ── Modals ── -->
+
+<!-- Verify Domain Modal -->
+<div class="modal-overlay" id="modal-verify">
+  <div class="modal" style="width:560px">
+    <div class="modal-head">
+      <span class="modal-title">Domain verifizieren</span>
+      <button class="modal-close" onclick="closeModal('verify')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="verify-domain-id">
+      <div class="dns-box">
+        <div style="color:var(--text2);margin-bottom:6px">
+          Füge folgenden TXT-Record in deinen DNS-Einstellungen hinzu, um den Besitz der Domain
+          <strong id="verify-domain-name" style="color:var(--text)"></strong> zu bestätigen:
+        </div>
+        <div class="dns-record">
+          <div><span style="color:var(--muted)">Name:</span> <span id="verify-record-name"></span></div>
+          <div style="margin-top:4px"><span style="color:var(--muted)">Typ:</span> TXT</div>
+          <div style="margin-top:4px"><span style="color:var(--muted)">Wert:</span> <span id="verify-record-value"></span></div>
+          <button class="copy-btn" onclick="copyToken()">Kopieren</button>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:var(--muted)">
+          DNS-Änderungen können bis zu 24 Stunden dauern. Nach dem Setzen des Records auf "Jetzt prüfen" klicken.
+        </div>
+      </div>
+      <div class="verify-result" id="verify-result"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="resetToken()">↻ Neues Token</button>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost" onclick="closeModal('verify')">Schließen</button>
+      <button class="btn btn-primary" id="verify-check-btn" onclick="runVerify()">🔍 Jetzt prüfen</button>
+    </div>
+  </div>
+</div>
 
 <!-- Domain Modal -->
 <div class="modal-overlay" id="modal-domain">
@@ -1044,6 +1144,30 @@
     <div class="modal-foot">
       <button class="btn btn-ghost" onclick="closeModal('ip')">Abbrechen</button>
       <button class="btn btn-primary" onclick="saveIP()">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- Quota Modal -->
+<div class="modal-overlay" id="modal-quota">
+  <div class="modal" style="width:380px">
+    <div class="modal-head">
+      <span class="modal-title">Domain-Quota setzen</span>
+      <button class="modal-close" onclick="closeModal('quota')">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="quota-user-id">
+      <div class="form-group">
+        <label class="form-label">Maximale Domains <span style="color:var(--muted)">(0 = unbegrenzt)</span></label>
+        <input class="form-input" id="quota-value" type="number" min="0" max="9999" value="10">
+      </div>
+      <div class="dns-box" style="font-size:11px;color:var(--text2)">
+        Admins haben immer unbegrenzte Domains, unabhängig von der Quota.
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" onclick="closeModal('quota')">Abbrechen</button>
+      <button class="btn btn-primary" onclick="saveQuota()">Speichern</button>
     </div>
   </div>
 </div>
@@ -1214,6 +1338,11 @@ function setupUser() {
   document.getElementById('sidebar-avatar').src = u.github_avatar || '';
   document.getElementById('sidebar-username').textContent = u.github_login;
   document.getElementById('sidebar-role').textContent = u.is_admin ? 'Admin' : 'Nutzer';
+  if (!u.is_admin) {
+    const domainCount = state.domains.filter(d => d.owner_id === u.id).length;
+    const q = u.domain_quota === 0 ? '∞' : u.domain_quota;
+    document.getElementById('sidebar-quota').textContent = `${domainCount}/${q} Domains`;
+  }
 
   if (u.is_admin) {
     document.getElementById('admin-section').style.display = '';
@@ -1270,26 +1399,50 @@ function renderDashboard() {
   }).join('');
 }
 
+function verificationBadge(status) {
+  if (status === 'verified') return '<span class="badge-verified">✓ Verifiziert</span>';
+  if (status === 'failed')   return '<span class="badge-failed">✗ Fehlgeschlagen</span>';
+  return '<span class="badge-pending">⏳ Ausstehend</span>';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SNI Domains
 // ─────────────────────────────────────────────────────────────────────────────
 function renderDomains() {
   const tbody = document.getElementById('domains-body');
+  const uid = state.currentUser?.id;
   const isAdmin = state.currentUser?.is_admin;
   if (!state.domains.length) {
-    tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">Keine Domains vorhanden</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">Keine Domains vorhanden</div></div></td></tr>`;
     return;
   }
   tbody.innerHTML = state.domains.map(d => {
     const router = d.backend_router;
+    const canModify = isAdmin || d.owner_id === uid;
+    const editBtns = canModify
+      ? `<div class="actions">
+           <button class="btn btn-ghost btn-sm" onclick="openVerifyModal(${d.id})" title="Verifizieren">🔍</button>
+           <button class="btn btn-ghost btn-sm" onclick="editDomain(${d.id})">✎</button>
+           <button class="btn btn-danger btn-sm" onclick="deleteDomain(${d.id})">✕</button>
+         </div>`
+      : '<span style="color:var(--muted);font-size:11px">–</span>';
     return `<tr>
-      <td><div class="cell-main">${esc(d.domain)}</div></td>
+      <td>
+        <div class="cell-main">${esc(d.domain)}</div>
+        ${d.owner_id ? `<div class="cell-sub">Eigentümer: ${esc(ownerLogin(d.owner_id))}</div>` : ''}
+      </td>
       <td><div style="color:var(--text2);font-size:11px">${esc(d.description || '–')}</div></td>
       <td>${router ? `<span class="badge-proto">${esc(router.name)}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
+      <td>${verificationBadge(d.verification_status)}</td>
       <td>${statusBadge(d.is_active)}</td>
-      <td>${actionBtns(`editDomain(${d.id})`, `deleteDomain(${d.id})`, isAdmin)}</td>
+      <td>${editBtns}</td>
     </tr>`;
   }).join('');
+}
+
+function ownerLogin(owner_id) {
+  const u = state.users.find(x => x.id === owner_id);
+  return u ? '@' + u.github_login : '#' + owner_id;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1348,29 +1501,37 @@ function renderUsers() {
   const tbody = document.getElementById('users-body');
   const isAdmin = state.currentUser?.is_admin;
   if (!state.users.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">◎</div><div class="empty-text">Keine Nutzer gefunden</div></div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">◎</div><div class="empty-text">Keine Nutzer gefunden</div></div></td></tr>`;
     return;
   }
   tbody.innerHTML = state.users.map(u => {
     const isSelf = u.id === state.currentUser?.id;
-    const editBtns = isAdmin && !isSelf ? `<div class="actions">
-      <button class="btn btn-ghost btn-sm" onclick="toggleAdmin(${u.id}, ${u.is_admin})">${u.is_admin ? 'Admin entfernen' : 'Admin setzen'}</button>
-      <button class="btn btn-ghost btn-sm" onclick="toggleActive(${u.id}, ${u.is_active})">${u.is_active ? 'Deaktivieren' : 'Aktivieren'}</button>
-      <button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">✕</button>
+    const domainCount = state.domains.filter(d => d.owner_id === u.id).length;
+    const quotaDisplay = u.domain_quota === 0
+      ? `<span style="color:var(--green)">${domainCount} / ∞</span>`
+      : `<span style="${domainCount >= u.domain_quota ? 'color:var(--accent2)' : 'color:var(--text2)'}">${domainCount} / ${u.domain_quota}</span>`;
+
+    const editBtns = isAdmin ? `<div class="actions">
+      ${!isSelf ? `<button class="btn btn-ghost btn-sm" onclick="toggleAdmin(${u.id}, ${u.is_admin})">${u.is_admin ? '↓ Admin' : '↑ Admin'}</button>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="openQuotaModal(${u.id}, ${u.domain_quota})">Quota</button>
+      ${!isSelf ? `<button class="btn btn-ghost btn-sm" onclick="toggleActive(${u.id}, ${u.is_active})">${u.is_active ? 'Sperren' : 'Aktivieren'}</button>` : ''}
+      ${!isSelf ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">✕</button>` : ''}
     </div>` : `<span style="color:var(--muted);font-size:11px">${isSelf ? '(du)' : '–'}</span>`;
-    const login = new Date(u.last_login).toLocaleDateString('de-DE') + ' ' + new Date(u.last_login).toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'});
+
+    const login = u.last_login ? new Date(u.last_login).toLocaleDateString('de-DE') + ' ' + new Date(u.last_login).toLocaleTimeString('de-DE', {hour:'2-digit',minute:'2-digit'}) : '–';
     return `<tr>
       <td>
         <div style="display:flex;align-items:center;gap:8px">
           <div class="avatar"><img src="${esc(u.github_avatar||'')}" alt="${esc(u.github_login)}"></div>
-          <div class="cell-main">@${esc(u.github_login)}</div>
+          <div class="cell-main">@${esc(u.github_login)}${isSelf ? ' <span style="color:var(--muted);font-size:10px">(du)</span>' : ''}</div>
         </div>
       </td>
       <td><div style="color:var(--text2);font-size:12px">${esc(u.github_name || '–')}</div></td>
       <td><div style="color:var(--text2);font-size:11px">${esc(u.email || '–')}</div></td>
       <td>${u.is_admin ? '<span class="badge-admin">Admin</span>' : '<span style="color:var(--muted);font-size:11px">Nutzer</span>'}</td>
+      <td>${quotaDisplay}</td>
       <td>${statusBadge(u.is_active)}</td>
-      <td><div style="color:var(--text2);font-size:11px">${u.last_login ? login : '–'}</div></td>
+      <td><div style="color:var(--text2);font-size:11px">${login}</div></td>
       <td>${editBtns}</td>
     </tr>`;
   }).join('');
@@ -1663,6 +1824,99 @@ function filterTable(tbodyId, query, cols) {
 // ─────────────────────────────────────────────────────────────────────────────
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Quota management
+// ─────────────────────────────────────────────────────────────────────────────
+function openQuotaModal(userId, currentQuota) {
+  document.getElementById('quota-user-id').value = userId;
+  document.getElementById('quota-value').value = currentQuota;
+  openModal('quota');
+}
+
+async function saveQuota() {
+  const id = document.getElementById('quota-user-id').value;
+  const quota = parseInt(document.getElementById('quota-value').value);
+  if (isNaN(quota) || quota < 0) { toast('Ungültige Quota', 'error'); return; }
+  try {
+    const updated = await api('PUT', `/users/${id}`, { domain_quota: quota });
+    const idx = state.users.findIndex(x => x.id === parseInt(id));
+    if (idx !== -1) state.users[idx] = updated;
+    closeModal('quota');
+    renderUsers();
+    toast(`Quota auf ${quota === 0 ? '∞' : quota} gesetzt`);
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain Verification
+// ─────────────────────────────────────────────────────────────────────────────
+function openVerifyModal(id) {
+  const d = state.domains.find(x => x.id === id);
+  if (!d) return;
+  document.getElementById('verify-domain-id').value = d.id;
+  document.getElementById('verify-domain-name').textContent = d.domain;
+  const bare = d.domain.replace(/^\*\./, '');
+  document.getElementById('verify-record-name').textContent = `_proxy-verify.${bare}`;
+  document.getElementById('verify-record-value').textContent = d.verification_token || '–';
+  const res = document.getElementById('verify-result');
+  res.style.display = 'none';
+  res.textContent = '';
+  if (d.verification_status === 'verified') {
+    res.className = 'verify-result success';
+    res.textContent = `✓ Verifiziert am ${new Date(d.verified_at).toLocaleString('de-DE')}`;
+    res.style.display = 'block';
+  }
+  openModal('verify');
+}
+
+async function runVerify() {
+  const id = document.getElementById('verify-domain-id').value;
+  const btn = document.getElementById('verify-check-btn');
+  const res = document.getElementById('verify-result');
+  btn.disabled = true;
+  btn.textContent = '⌛ Prüfe…';
+  res.style.display = 'none';
+  try {
+    const data = await api('POST', `/domains/${id}/verify`);
+    res.className = 'verify-result ' + (data.success ? 'success' : 'error');
+    res.textContent = data.message;
+    res.style.display = 'block';
+    // Update local state
+    const idx = state.domains.findIndex(x => x.id === parseInt(id));
+    if (idx !== -1) {
+      state.domains[idx].verification_status = data.verification_status;
+      if (data.success) state.domains[idx].verified_at = new Date().toISOString();
+    }
+    renderDomains();
+    renderDashboard();
+  } catch(e) {
+    res.className = 'verify-result error';
+    res.textContent = e.message;
+    res.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Jetzt prüfen';
+  }
+}
+
+async function resetToken() {
+  const id = document.getElementById('verify-domain-id').value;
+  try {
+    const updated = await api('POST', `/domains/${id}/reset-token`);
+    const idx = state.domains.findIndex(x => x.id === parseInt(id));
+    if (idx !== -1) state.domains[idx] = updated;
+    // Refresh modal
+    openVerifyModal(parseInt(id));
+    renderDomains();
+    toast('Neues Verifikations-Token generiert');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+function copyToken() {
+  const val = document.getElementById('verify-record-value').textContent;
+  navigator.clipboard.writeText(val).then(() => toast('Token kopiert'));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

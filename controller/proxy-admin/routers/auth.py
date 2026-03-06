@@ -10,7 +10,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.database import get_db, User
+from models.database import get_db, User, AsyncSessionLocal
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -36,7 +36,16 @@ def decode_session_token(token: str) -> Optional[int]:
         return None
 
 
-async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> Optional[User]:
+async def get_current_user(request: Request, db: AsyncSession = None) -> Optional[User]:
+    """
+    Can be called directly (db required) or via FastAPI DI.
+    If db is a Depends object (i.e. called outside DI), opens its own session.
+    """
+    # Guard: if called outside DI without a real session, open one ourselves
+    if db is None or isinstance(db, type(Depends(get_db))):
+        async with AsyncSessionLocal() as session:
+            return await get_current_user(request, session)
+
     token = request.cookies.get("session")
     if not token:
         return None
@@ -80,7 +89,6 @@ async def callback(code: str, state: str, response: Response, db: AsyncSession =
         raise HTTPException(status_code=400, detail="Invalid state")
     del _state_store[state]
 
-    # Exchange code for token
     async with httpx.AsyncClient() as client:
         token_resp = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -98,7 +106,6 @@ async def callback(code: str, state: str, response: Response, db: AsyncSession =
     if not access_token:
         raise HTTPException(status_code=400, detail="Failed to get access token")
 
-    # Fetch GitHub user info
     async with httpx.AsyncClient() as client:
         user_resp = await client.get(
             "https://api.github.com/user",
@@ -117,10 +124,8 @@ async def callback(code: str, state: str, response: Response, db: AsyncSession =
         gh_user.get("email"),
     )
 
-    # Upsert user
     result = await db.execute(select(User).where(User.github_id == gh_user["id"]))
     user = result.scalar_one_or_none()
-
     is_admin = gh_user["login"] in ADMIN_USERS
 
     if user is None:

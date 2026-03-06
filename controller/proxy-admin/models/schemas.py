@@ -1,5 +1,5 @@
 from pydantic import BaseModel, field_validator
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 import re
 
@@ -10,20 +10,23 @@ class UserOut(BaseModel):
     id: int
     github_id: int
     github_login: str
-    github_name: Optional[str]
-    github_avatar: Optional[str]
-    email: Optional[str]
+    github_name: Optional[str] = None
+    github_avatar: Optional[str] = None
+    email: Optional[str] = None
     is_admin: bool
     is_active: bool
+    domain_quota: int
     created_at: datetime
-    last_login: Optional[datetime]
+    last_login: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 
 
 class UserUpdate(BaseModel):
-    is_admin: Optional[bool] = None
+    """Admin-only: manage account status and quota."""
     is_active: Optional[bool] = None
+    domain_quota: Optional[int] = None
+    is_admin: Optional[bool] = None  # only honoured when called from admin endpoint
 
 
 # ── InternalIP Schemas ────────────────────────────────────────────────────────
@@ -73,7 +76,7 @@ class InternalIPOut(InternalIPBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    created_by_id: Optional[int]
+    created_by_id: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -120,7 +123,7 @@ class BackendRouterOut(BackendRouterBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    created_by_id: Optional[int]
+    created_by_id: Optional[int] = None
     ip_address: Optional[InternalIPOut] = None
 
     model_config = {"from_attributes": True}
@@ -148,7 +151,6 @@ class SNIDomainCreate(SNIDomainBase):
 
 
 class SNIDomainUpdate(BaseModel):
-    domain: Optional[str] = None
     description: Optional[str] = None
     backend_router_id: Optional[int] = None
     is_active: Optional[bool] = None
@@ -156,12 +158,22 @@ class SNIDomainUpdate(BaseModel):
 
 class SNIDomainOut(SNIDomainBase):
     id: int
+    owner_id: Optional[int] = None
+    verification_token: Optional[str] = None
+    verification_status: str = "pending"
+    verified_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    created_by_id: Optional[int]
+    created_by_id: Optional[int] = None
     backend_router: Optional[BackendRouterOut] = None
 
     model_config = {"from_attributes": True}
+
+
+class VerifyResult(BaseModel):
+    success: bool
+    message: str
+    verification_status: str
 
 
 # ── Aggregated payload for full sync ─────────────────────────────────────────
@@ -172,3 +184,5 @@ class FullSync(BaseModel):
     backend_routers: list[BackendRouterOut]
     internal_ips: list[InternalIPOut]
     current_user: UserOut
+
+SNIDomainOut.model_rebuild()
