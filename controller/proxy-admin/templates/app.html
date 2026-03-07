@@ -906,7 +906,7 @@
             <tr>
               <th>Name</th>
               <th>Beschreibung</th>
-              <th>WireGuard Key</th>
+              <th>Status / Gerät</th>
               <th>IP-Adresse</th>
               <th>Port / Proto</th>
               <th>Domains</th>
@@ -943,18 +943,44 @@
             <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Belegt</div>
             <div style="font-family:var(--mono);color:var(--green);margin-top:4px" id="cfg-free">–</div>
           </div>
+          <div style="border-left:1px solid var(--border);padding-left:32px">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Server WG Endpoint</div>
+            <div style="font-family:var(--mono);font-size:12px;color:var(--text2);margin-top:4px" id="cfg-endpoint">
+              <span style="color:var(--accent2)">⚠ Nicht konfiguriert</span>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Server WG Public Key</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--text2);margin-top:4px;max-width:220px;word-break:break-all" id="cfg-server-wg">
+              <span style="color:var(--accent2)">⚠ Nicht konfiguriert</span>
+            </div>
+          </div>
         </div>
-        <div style="padding:0 20px 16px;display:none;gap:12px;align-items:flex-end" id="config-edit-form">
-          <div class="form-group" style="margin:0;flex:1">
-            <label class="form-label">IP-Pool (CIDR)</label>
-            <input class="form-input" id="cfg-range-input" placeholder="10.0.0.0/9">
+        <div style="padding:0 20px 16px;display:none;flex-direction:column;gap:12px" id="config-edit-form">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="margin:0;flex:1;min-width:160px">
+              <label class="form-label">IP-Pool (CIDR)</label>
+              <input class="form-input" id="cfg-range-input" placeholder="10.0.0.0/9">
+            </div>
+            <div class="form-group" style="margin:0;width:140px">
+              <label class="form-label">Router-Präfix</label>
+              <input class="form-input" id="cfg-prefix-input" type="number" min="8" max="30" placeholder="28">
+            </div>
           </div>
-          <div class="form-group" style="margin:0;width:160px">
-            <label class="form-label">Router-Präfix</label>
-            <input class="form-input" id="cfg-prefix-input" type="number" min="8" max="30" placeholder="28">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+            <div class="form-group" style="margin:0;flex:1;min-width:200px">
+              <label class="form-label">Server WireGuard Endpoint <span style="color:var(--muted);font-weight:400">(host:port)</span></label>
+              <input class="form-input" id="cfg-endpoint-input" placeholder="vpn.example.com:51820" style="font-family:var(--mono)">
+            </div>
+            <div class="form-group" style="margin:0;flex:2;min-width:260px">
+              <label class="form-label">Server WireGuard Public Key</label>
+              <input class="form-input" id="cfg-server-wg-input" placeholder="Base64, 44 Zeichen" style="font-family:var(--mono);font-size:11px">
+            </div>
           </div>
-          <button class="btn btn-primary btn-sm" onclick="saveConfig()" style="margin-bottom:0">Speichern</button>
-          <button class="btn btn-ghost btn-sm" onclick="closeConfigEdit()" style="margin-bottom:0">Abbrechen</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="saveConfig()">Speichern</button>
+            <button class="btn btn-ghost btn-sm" onclick="closeConfigEdit()">Abbrechen</button>
+          </div>
         </div>
       </div>
 
@@ -1107,10 +1133,20 @@
         <label class="form-label">Beschreibung</label>
         <input class="form-input" id="router-desc" placeholder="Optional">
       </div>
-      <div class="form-group">
-        <label class="form-label">WireGuard Public Key</label>
-        <input class="form-input" id="router-wg-key" placeholder="Base64-kodierter Public Key (44 Zeichen)" autocomplete="off" style="font-size:11px">
-        <div style="font-size:10px;color:var(--muted);margin-top:4px">Generiere mit: <code style="color:var(--accent)">wg genkey | tee privatekey | wg pubkey</code></div>
+      <div class="form-group" id="pairing-code-group">
+        <label class="form-label">Pairing-Code <span style="color:var(--muted);font-weight:400">(vom Router-Gerät)</span></label>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input class="form-input" id="router-pairing-code" placeholder="XXXX-XXXX" autocomplete="off"
+            style="font-family:var(--mono);font-size:15px;letter-spacing:.12em;text-transform:uppercase;flex:1"
+            oninput="formatPairingCode(this)" maxlength="9">
+          <button type="button" class="btn btn-ghost btn-sm" id="pair-check-btn" onclick="checkPairingCode()" style="white-space:nowrap">Prüfen</button>
+        </div>
+        <div id="pairing-status" style="margin-top:6px;font-size:11px;min-height:18px"></div>
+      </div>
+      <!-- Read-only: shows WG key after pairing (edit mode only) -->
+      <div class="form-group" id="wg-key-display" style="display:none">
+        <label class="form-label">WireGuard Public Key <span style="color:var(--green);font-size:10px">● Gepairt</span></label>
+        <div id="wg-key-value" style="font-family:var(--mono);font-size:10px;color:var(--text2);word-break:break-all;background:var(--surface2);padding:8px 10px;border-radius:6px"></div>
       </div>
       <div class="form-row">
         <div class="form-group">
@@ -1515,11 +1551,31 @@ function renderRouters() {
     const ip = r.ip_address;
     const domainCount = state.domains.filter(d => d.backend_router_id === r.id).length;
     const canModify = isAdmin || r.owner_id === uid;
-    const wgKey = r.wireguard_public_key
-      ? `<span style="font-family:var(--mono);font-size:10px;color:var(--accent)">${esc(r.wireguard_public_key.slice(0,16))}…</span>`
-      : '<span style="color:var(--muted)">–</span>';
+    const pairingBadge = {
+      active:   `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:#1a3a1a;color:var(--green)">● Aktiv</span>`,
+      pending:  `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--surface2);color:var(--muted)">○ Ausstehend</span>`,
+      inactive: `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:#3a1a1a;color:var(--accent2)">✕ Inaktiv</span>`,
+    }[r.pairing_status] || '';
+    // "Letzter Kontakt" — show never/first_seen/last_seen
+    let contactLine = '';
+    if (!r.first_seen_at) {
+      contactLine = `<div style="font-size:10px;color:var(--accent2);margin-top:3px">Noch nie verbunden</div>`;
+    } else if (!r.last_seen_at) {
+      contactLine = `<div style="font-size:10px;color:var(--muted);margin-top:3px">Erstkontakt: ${timeSince(r.first_seen_at)}</div>`;
+    } else {
+      const stale = (Date.now() - new Date(r.last_seen_at)) > 120000; // >2min = stale
+      const color = stale ? 'var(--accent2)' : 'var(--muted)';
+      contactLine = `<div style="font-size:10px;color:${color};margin-top:3px" title="Erstkontakt: ${r.first_seen_at}">Zuletzt: ${timeSince(r.last_seen_at)}</div>`;
+    }
+    const wgKey = pairingBadge + contactLine;
+    const toggleBtn = isAdmin
+      ? (r.pairing_status === 'active'
+          ? `<button class="btn btn-ghost btn-sm" title="Deaktivieren" onclick="setRouterStatus(${r.id},'inactive')">⏸</button>`
+          : `<button class="btn btn-ghost btn-sm" title="Aktivieren" onclick="setRouterStatus(${r.id},'active')">▶</button>`)
+      : '';
     const editBtns = canModify
       ? `<div class="actions">
+           ${toggleBtn}
            <button class="btn btn-ghost btn-sm" onclick="editRouter(${r.id})">✎</button>
            <button class="btn btn-danger btn-sm" onclick="deleteRouter(${r.id})">✕</button>
          </div>`
@@ -1567,12 +1623,19 @@ function renderIPs() {
   }).join('');
   // Update config display
   if (state.config) {
-    document.getElementById('cfg-range').textContent = state.config.ip_range;
-    document.getElementById('cfg-prefix').textContent = '/' + state.config.router_prefix;
-    // Estimate free subnets
+    const cfg = state.config;
+    document.getElementById('cfg-range').textContent = cfg.ip_range;
+    document.getElementById('cfg-prefix').textContent = '/' + cfg.router_prefix;
     const used = state.ips.filter(i => i.subnet && i.auto_allocated).length;
-    // rough estimate without full subnet math
-    document.getElementById('cfg-free').textContent = (state.config.ip_range ? (used + ' belegt') : '–');
+    document.getElementById('cfg-free').textContent = used + ' belegt';
+    const epEl = document.getElementById('cfg-endpoint');
+    epEl.innerHTML = cfg.server_endpoint
+      ? `<span style="color:var(--text)">${esc(cfg.server_endpoint)}</span>`
+      : '<span style="color:var(--accent2)">⚠ Nicht konfiguriert</span>';
+    const wgEl = document.getElementById('cfg-server-wg');
+    wgEl.innerHTML = cfg.server_wg_public_key
+      ? `<span style="color:var(--text2)">${esc(cfg.server_wg_public_key.slice(0,20))}…</span>`
+      : '<span style="color:var(--accent2)">⚠ Nicht konfiguriert</span>';
   }
 }
 
@@ -1711,28 +1774,75 @@ async function deleteDomain(id) {
 function _showRouterModal(r) {
   const isAdmin = state.currentUser?.is_admin;
   document.getElementById('router-ip-section').style.display = isAdmin ? '' : 'none';
+  document.getElementById('pairing-status').textContent = '';
   if (r) {
     document.getElementById('modal-router-title').textContent = 'Router bearbeiten';
     document.getElementById('router-edit-id').value = r.id;
     document.getElementById('router-name').value = r.name;
     document.getElementById('router-desc').value = r.description || '';
-    document.getElementById('router-wg-key').value = r.wireguard_public_key || '';
     document.getElementById('router-port').value = r.port;
     document.getElementById('router-protocol').value = r.protocol;
     document.getElementById('router-active').checked = r.is_active;
     if (isAdmin) document.getElementById('router-ip').value = r.ip_address_id || '';
+    // Edit mode: hide pairing input, show router_id + wg key read-only
+    document.getElementById('pairing-code-group').style.display = 'none';
+    const hasKey = r.wireguard_public_key || r.router_id;
+    document.getElementById('wg-key-display').style.display = hasKey ? '' : 'none';
+    document.getElementById('wg-key-value').innerHTML = [
+      r.router_id ? `<div style="margin-bottom:4px"><span style="color:var(--muted)">Router-ID: </span><span style="color:var(--accent)">${esc(r.router_id)}</span></div>` : '',
+      r.wireguard_public_key ? `<div><span style="color:var(--muted)">WG Key: </span>${esc(r.wireguard_public_key)}</div>` : '<span style="color:var(--muted)">WG Key noch nicht empfangen</span>',
+    ].join('');
   } else {
     document.getElementById('modal-router-title').textContent = 'Neuer Router';
     document.getElementById('router-edit-id').value = '';
     document.getElementById('router-name').value = '';
     document.getElementById('router-desc').value = '';
-    document.getElementById('router-wg-key').value = '';
+    document.getElementById('router-pairing-code').value = '';
     document.getElementById('router-port').value = 443;
     document.getElementById('router-protocol').value = 'https';
     document.getElementById('router-active').checked = true;
     if (isAdmin) document.getElementById('router-ip').value = '';
+    // New router: show pairing input
+    document.getElementById('pairing-code-group').style.display = '';
+    document.getElementById('wg-key-display').style.display = 'none';
   }
   openModal('router');
+}
+
+function formatPairingCode(el) {
+  // Strip everything except valid chars, auto-insert dash after position 4
+  let v = el.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
+  if (v.length > 4) v = v.slice(0, 4) + '-' + v.slice(4, 8);
+  el.value = v;
+}
+
+async function checkPairingCode() {
+  const rawCode = document.getElementById('router-pairing-code').value.trim().toUpperCase().replace(/[^A-Z2-9]/g, '');
+  const code = rawCode.length === 8 ? rawCode.slice(0,4) + '-' + rawCode.slice(4) : document.getElementById('router-pairing-code').value.trim().toUpperCase();
+  const el = document.getElementById('pairing-status');
+  if (!code || code.length < 9) {
+    el.style.color = 'var(--muted)';
+    el.textContent = 'Bitte vollständigen Code eingeben (XXXX-XXXX)';
+    return;
+  }
+  el.style.color = 'var(--muted)';
+  el.textContent = '⏳ Prüfe…';
+  try {
+    const data = await fetch(`/api/pair/status/${code}`).then(r => r.json());
+    if (data.status === 'waiting') {
+      el.style.color = 'var(--green)';
+      el.textContent = '✓ Router gefunden und wartet auf Kopplung';
+    } else if (data.status === 'paired') {
+      el.style.color = 'var(--accent)';
+      el.textContent = '⚠ Dieser Code wurde bereits verwendet';
+    } else {
+      el.style.color = 'var(--accent2)';
+      el.textContent = '✗ Code nicht gefunden oder abgelaufen (Router neu starten)';
+    }
+  } catch(e) {
+    el.style.color = 'var(--accent2)';
+    el.textContent = '✗ Fehler bei der Prüfung';
+  }
 }
 
 function editRouter(id) {
@@ -1750,11 +1860,16 @@ async function saveRouter() {
   const body = {
     name: document.getElementById('router-name').value.trim(),
     description: document.getElementById('router-desc').value.trim() || null,
-    wireguard_public_key: document.getElementById('router-wg-key').value.trim() || null,
     port: parseInt(document.getElementById('router-port').value),
     protocol: document.getElementById('router-protocol').value,
     is_active: document.getElementById('router-active').checked,
   };
+  // Only send pairing_code when creating a new router
+  if (!id) {
+    const raw = document.getElementById('router-pairing-code').value.trim().toUpperCase().replace(/[^A-Z2-9]/g, '');
+    const code = raw.length === 8 ? raw.slice(0,4) + '-' + raw.slice(4) : document.getElementById('router-pairing-code').value.trim().toUpperCase();
+    if (code) body.pairing_code = code;
+  }
   if (isAdmin) {
     body.ip_address_id = document.getElementById('router-ip').value
       ? parseInt(document.getElementById('router-ip').value) : null;
@@ -1775,6 +1890,16 @@ async function saveRouter() {
     updateBadges();
     fillSelects();
     toast(id ? 'Router aktualisiert' : 'Router erstellt');
+  } catch(e) { toast(e.message, 'error'); }
+}
+
+async function setRouterStatus(id, status) {
+  try {
+    const updated = await api('PATCH', `/routers/${id}/status?status=${status}`, {});
+    const idx = state.routers.findIndex(x => x.id === id);
+    if (idx !== -1) state.routers[idx] = updated;
+    renderRouters();
+    toast(status === 'active' ? 'Router aktiviert' : 'Router deaktiviert');
   } catch(e) { toast(e.message, 'error'); }
 }
 
@@ -1924,6 +2049,14 @@ function filterTable(tbodyId, query, cols) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Escape HTML
 // ─────────────────────────────────────────────────────────────────────────────
+function timeSince(isoDate) {
+  const sec = Math.floor((Date.now() - new Date(isoDate)) / 1000);
+  if (sec < 60) return 'gerade eben';
+  if (sec < 3600) return Math.floor(sec/60) + ' Min. ago';
+  if (sec < 86400) return Math.floor(sec/3600) + ' Std. ago';
+  return Math.floor(sec/86400) + ' Tage ago';
+}
+
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -1936,6 +2069,8 @@ function openConfigEdit() {
   if (!cfg) return;
   document.getElementById('cfg-range-input').value = cfg.ip_range;
   document.getElementById('cfg-prefix-input').value = cfg.router_prefix;
+  document.getElementById('cfg-endpoint-input').value = cfg.server_endpoint || '';
+  document.getElementById('cfg-server-wg-input').value = cfg.server_wg_public_key || '';
   document.getElementById('config-display').style.display = 'none';
   document.getElementById('config-edit-form').style.display = 'flex';
   document.getElementById('config-edit-btn').style.display = 'none';
@@ -1951,6 +2086,8 @@ async function saveConfig() {
   const body = {
     ip_range: document.getElementById('cfg-range-input').value.trim(),
     router_prefix: parseInt(document.getElementById('cfg-prefix-input').value),
+    server_endpoint: document.getElementById('cfg-endpoint-input').value.trim() || null,
+    server_wg_public_key: document.getElementById('cfg-server-wg-input').value.trim() || null,
   };
   try {
     const updated = await api('PUT', '/config', body);

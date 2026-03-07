@@ -87,21 +87,9 @@ class InternalIPOut(InternalIPBase):
 class BackendRouterBase(BaseModel):
     name: str
     description: Optional[str] = None
-    wireguard_public_key: Optional[str] = None
     port: int = 443
     protocol: str = "https"
     is_active: bool = True
-
-    @field_validator("wireguard_public_key")
-    @classmethod
-    def validate_wg_key(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v.strip() == "":
-            return None
-        v = v.strip()
-        # WireGuard public keys are 44-char base64 strings ending with '='
-        if not re.match(r"^[A-Za-z0-9+/]{43}=$", v):
-            raise ValueError("Ungültiger WireGuard Public Key (Base64, 44 Zeichen)")
-        return v
 
     @field_validator("port")
     @classmethod
@@ -119,27 +107,29 @@ class BackendRouterBase(BaseModel):
 
 
 class BackendRouterCreate(BackendRouterBase):
-    pass
+    """pairing_code is optional: if given, wg_public_key is resolved from the pairing request."""
+    pairing_code: Optional[str] = None
+
+    @field_validator("pairing_code")
+    @classmethod
+    def validate_code(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v.strip() == "":
+            return None
+        v = re.sub(r'[^A-Z2-9]', '', v.strip().upper())
+        if len(v) == 8:
+            v = v[:4] + '-' + v[4:]
+        if not re.match(r"^[A-Z2-9]{4}-[A-Z2-9]{4}$", v):
+            raise ValueError("Ungültiger Pairing-Code (Format: XXXX-XXXX oder XXXXXXXX)")
+        return v
 
 
 class BackendRouterUpdate(BaseModel):
     """Fields any owner can update."""
     name: Optional[str] = None
     description: Optional[str] = None
-    wireguard_public_key: Optional[str] = None
     port: Optional[int] = None
     protocol: Optional[str] = None
     is_active: Optional[bool] = None
-
-    @field_validator("wireguard_public_key")
-    @classmethod
-    def validate_wg_key(cls, v: Optional[str]) -> Optional[str]:
-        if v is None or v.strip() == "":
-            return None
-        v = v.strip()
-        if not re.match(r"^[A-Za-z0-9+/]{43}=$", v):
-            raise ValueError("Ungültiger WireGuard Public Key (Base64, 44 Zeichen)")
-        return v
 
 
 class BackendRouterAdminUpdate(BackendRouterUpdate):
@@ -150,6 +140,13 @@ class BackendRouterAdminUpdate(BackendRouterUpdate):
 class BackendRouterOut(BackendRouterBase):
     id: int
     owner_id: Optional[int]
+    # Set by controller from pairing_code — public identifier
+    router_id: Optional[str] = None
+    pairing_status: str = "pending"
+    first_seen_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    # WireGuard public key sent by the router device during polling
+    wireguard_public_key: Optional[str] = None
     ip_address_id: Optional[int]
     created_at: datetime
     updated_at: datetime
@@ -216,11 +213,32 @@ class FullSync(BaseModel):
     network_config: Optional["NetworkConfigOut"] = None
 
 
+# ── Pairing Schemas ───────────────────────────────────────────────────────────
+
+class PairingStatusResponse(BaseModel):
+    status: str  # "pending" | "active" | "inactive"
+    # Present when active
+    router_id: Optional[int] = None
+    router_name: Optional[str] = None
+    subnet: Optional[str] = None
+    ip_address: Optional[str] = None
+    # Router's own WireGuard public key (echoed back for confirmation)
+    wg_public_key: Optional[str] = None
+    # WireGuard server config for the client to configure its tunnel
+    server_wg_public_key: Optional[str] = None
+    server_endpoint: Optional[str] = None
+    # How often to poll in seconds
+    poll_interval: int = 10
+
+
+
 # ── NetworkConfig Schemas ─────────────────────────────────────────────────────
 
 class NetworkConfigOut(BaseModel):
     ip_range: str
     router_prefix: int
+    server_wg_public_key: Optional[str] = None
+    server_endpoint: Optional[str] = None
     updated_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
@@ -229,6 +247,8 @@ class NetworkConfigOut(BaseModel):
 class NetworkConfigUpdate(BaseModel):
     ip_range: Optional[str] = None
     router_prefix: Optional[int] = None
+    server_wg_public_key: Optional[str] = None
+    server_endpoint: Optional[str] = None
 
     @field_validator("ip_range")
     @classmethod

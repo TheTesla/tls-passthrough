@@ -34,6 +34,9 @@ class NetworkConfig(Base):
     ip_range = Column(String(18), nullable=False, default="10.0.0.0/9")
     # Prefix length for each router's subnet (e.g. 28 → /28 = 16 IPs, 14 usable)
     router_prefix = Column(Integer, nullable=False, default=28)
+    # WireGuard server config — sent to clients after pairing
+    server_wg_public_key = Column(String(64), nullable=True)
+    server_endpoint = Column(String(253), nullable=True)   # e.g. "vpn.example.com:51820"
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
     updated_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -87,6 +90,11 @@ class BackendRouter(Base):
     name = Column(String(100), unique=True, nullable=False, index=True)
     description = Column(Text, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # router_id = HMAC-SHA256(pairing_code, ROUTER_ID_SECRET) — set by admin during pairing
+    router_id = Column(String(32), unique=True, nullable=True, index=True)
+    pairing_status = Column(String(10), nullable=False, default="pending")  # pending|active|inactive
+    first_seen_at = Column(DateTime, nullable=True)   # when router first polled
+    last_seen_at = Column(DateTime, nullable=True)    # most recent poll
     wireguard_public_key = Column(String(64), nullable=True)
     ip_address_id = Column(Integer, ForeignKey("internal_ips.id"), nullable=True)
     port = Column(Integer, nullable=False, default=443)
@@ -127,6 +135,12 @@ class SNIDomain(Base):
 
 
 _MIGRATIONS = [
+    ("network_config",   "server_wg_public_key", "VARCHAR(64)"),
+    ("network_config",   "server_endpoint",      "VARCHAR(253)"),
+    ("backend_routers",  "router_id",             "VARCHAR(32)"),
+    ("backend_routers",  "pairing_status",        "VARCHAR(10) NOT NULL DEFAULT 'pending'"),
+    ("backend_routers",  "first_seen_at",         "DATETIME"),
+    ("backend_routers",  "last_seen_at",          "DATETIME"),
     # network_config is created by create_all; only column additions needed here
     ("users",           "domain_quota",        "INTEGER NOT NULL DEFAULT 10"),
     ("users",           "router_quota",         "INTEGER NOT NULL DEFAULT 5"),

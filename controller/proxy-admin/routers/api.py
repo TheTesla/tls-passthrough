@@ -15,6 +15,7 @@ from models.schemas import (
     NetworkConfigOut, NetworkConfigUpdate,
 )
 from routers.auth import require_user, require_admin
+from routers.router_auth import compute_router_id
 
 api_router = APIRouter(prefix="/api", tags=["api"])
 
@@ -124,7 +125,6 @@ async def update_config(
 ):
     cfg = await _get_config(db)
     if body.ip_range is not None:
-        # Validate new range doesn't conflict with existing allocations
         new_pool = ipaddress.ip_network(body.ip_range, strict=True)
         used_q = await db.execute(
             select(InternalIP.subnet).where(InternalIP.auto_allocated == True)
@@ -139,6 +139,10 @@ async def update_config(
         cfg.ip_range = body.ip_range
     if body.router_prefix is not None:
         cfg.router_prefix = body.router_prefix
+    if body.server_wg_public_key is not None:
+        cfg.server_wg_public_key = body.server_wg_public_key or None
+    if body.server_endpoint is not None:
+        cfg.server_endpoint = body.server_endpoint or None
     cfg.updated_by_id = current_user.id
     cfg.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -216,6 +220,7 @@ async def delete_ip(ip_id: int, current_user: User = Depends(require_admin), db:
 
 # ── Backend Routers ───────────────────────────────────────────────────────────
 
+
 @api_router.get("/routers", response_model=list[BackendRouterOut])
 async def list_routers(current_user: User = Depends(require_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(_router_q().order_by(BackendRouter.name))
@@ -234,8 +239,22 @@ async def create_router(body: BackendRouterCreate, current_user: User = Depends(
     if (await db.execute(select(BackendRouter).where(BackendRouter.name == body.name))).scalar_one_or_none():
         raise HTTPException(400, "Router-Name existiert bereits")
 
+    # Compute router_id from pairing_code using HMAC
+    router_id = None
+    if body.pairing_code:
+        router_id = compute_router_id(body.pairing_code)
+        # Check not already used
+        conflict = (await db.execute(
+            select(BackendRouter).where(BackendRouter.router_id == router_id)
+        )).scalar_one_or_none()
+        if conflict:
+            raise HTTPException(409, "Dieser Pairing-Code ist bereits einem Router zugewiesen")
+
+    data = body.model_dump(exclude={"pairing_code"})
     r = BackendRouter(
-        **body.model_dump(),
+        **data,
+        router_id=router_id,
+        pairing_status="active" if router_id else "pending",
         owner_id=current_user.id,
         created_by_id=current_user.id,
     )
@@ -273,6 +292,27 @@ async def update_router(
 
     for k, v in data.items():
         setattr(r, k, v)
+    r.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    result2 = await db.execute(_router_q().where(BackendRouter.id == router_id))
+    return BackendRouterOut.model_validate(result2.scalar_one())
+
+
+@api_router.patch("/routers/{router_id}/status", response_model=BackendRouterOut)
+async def set_router_status(
+    router_id: int,
+    status: str,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin can set router pairing_status to active or inactive."""
+    if status not in ("active", "inactive", "pending"):
+        raise HTTPException(400, "Status muss 'active', 'inactive' oder 'pending' sein")
+    result = await db.execute(_router_q().where(BackendRouter.id == router_id))
+    r = result.scalar_one_or_none()
+    if not r:
+        raise HTTPException(404, "Router nicht gefunden")
+    r.pairing_status = status
     r.updated_at = datetime.now(timezone.utc)
     await db.commit()
     result2 = await db.execute(_router_q().where(BackendRouter.id == router_id))
