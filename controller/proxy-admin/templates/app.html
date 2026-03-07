@@ -1563,7 +1563,8 @@ function renderRouters() {
     } else if (!r.last_seen_at) {
       contactLine = `<div style="font-size:10px;color:var(--muted);margin-top:3px">Erstkontakt: ${timeSince(r.first_seen_at)}</div>`;
     } else {
-      const stale = (Date.now() - new Date(r.last_seen_at)) > 120000; // >2min = stale
+      const lsUtc = r.last_seen_at && !r.last_seen_at.endsWith("Z") ? r.last_seen_at + "Z" : r.last_seen_at;
+      const stale = (Date.now() - new Date(lsUtc)) > 120000; // >2min = stale
       const color = stale ? 'var(--accent2)' : 'var(--muted)';
       contactLine = `<div style="font-size:10px;color:${color};margin-top:3px" title="Erstkontakt: ${r.first_seen_at}">Zuletzt: ${timeSince(r.last_seen_at)}</div>`;
     }
@@ -2050,7 +2051,9 @@ function filterTable(tbodyId, query, cols) {
 // Escape HTML
 // ─────────────────────────────────────────────────────────────────────────────
 function timeSince(isoDate) {
-  const sec = Math.floor((Date.now() - new Date(isoDate)) / 1000);
+  // Ensure the string is parsed as UTC (append Z if no timezone info present)
+  const utc = isoDate && !isoDate.endsWith('Z') && !isoDate.includes('+') ? isoDate + 'Z' : isoDate;
+  const sec = Math.floor((Date.now() - new Date(utc)) / 1000);
   if (sec < 60) return 'gerade eben';
   if (sec < 3600) return Math.floor(sec/60) + ' Min. ago';
   if (sec < 86400) return Math.floor(sec/3600) + ' Std. ago';
@@ -2197,6 +2200,22 @@ function copyToken() {
 // Init
 // ─────────────────────────────────────────────────────────────────────────────
 syncAll();
+
+// Auto-refresh every 30s to keep "Letzter Kontakt" current
+setInterval(async () => {
+  try {
+    const data = await api('GET', '/sync');
+    state.domains  = data.sni_domains;
+    state.routers  = data.backend_routers;
+    state.ips      = data.internal_ips;
+    state.users    = data.users;
+    state.config   = data.network_config;
+    // Silent re-render — only update tables that show live data
+    renderRouters();
+    renderIPs();
+    updateBadges();
+  } catch(e) { /* silent — don't toast on background refresh */ }
+}, 30000);
 </script>
 </body>
 </html>
