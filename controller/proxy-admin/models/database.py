@@ -12,7 +12,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./proxy_admin.db")
 
 engine = create_async_engine(DATABASE_URL, echo=False)
-AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+AsyncSessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=True)
 
 
 class Base(DeclarativeBase):
@@ -92,14 +92,15 @@ class BackendRouter(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     # router_id = HMAC-SHA256(pairing_code, ROUTER_ID_SECRET) — set by admin during pairing
     router_id = Column(String(32), unique=True, nullable=True, index=True)
-    pairing_status = Column(String(10), nullable=False, default="pending")  # pending|active|inactive
+    enabled = Column(Boolean, nullable=False, default=True)
+    device_status = Column(String(15), nullable=False, default="uninitialized")  # uninitialized|ok|error
+    poll_interval = Column(Integer, nullable=False, default=30)  # expected seconds between polls
     first_seen_at = Column(DateTime, nullable=True)   # when router first polled
     last_seen_at = Column(DateTime, nullable=True)    # most recent poll
     wireguard_public_key = Column(String(64), nullable=True)
     ip_address_id = Column(Integer, ForeignKey("internal_ips.id"), nullable=True)
     port = Column(Integer, nullable=False, default=443)
     protocol = Column(String(10), default="https")
-    is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
                         onupdate=lambda: datetime.now(timezone.utc))
@@ -138,7 +139,9 @@ _MIGRATIONS = [
     ("network_config",   "server_wg_public_key", "VARCHAR(64)"),
     ("network_config",   "server_endpoint",      "VARCHAR(253)"),
     ("backend_routers",  "router_id",             "VARCHAR(32)"),
-    ("backend_routers",  "pairing_status",        "VARCHAR(10) NOT NULL DEFAULT 'pending'"),
+    ("backend_routers",  "enabled",               "BOOLEAN NOT NULL DEFAULT 1"),
+    ("backend_routers",  "device_status",         "VARCHAR(15) NOT NULL DEFAULT 'uninitialized'"),
+    ("backend_routers",  "poll_interval",         "INTEGER NOT NULL DEFAULT 30"),
     ("backend_routers",  "first_seen_at",         "DATETIME"),
     ("backend_routers",  "last_seen_at",          "DATETIME"),
     # network_config is created by create_all; only column additions needed here
@@ -165,6 +168,7 @@ async def init_db():
                 await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}"))
             except Exception:
                 pass  # already exists
+
         # Ensure singleton NetworkConfig row exists
         row = await conn.execute(text("SELECT id FROM network_config WHERE id=1"))
         if not row.fetchone():

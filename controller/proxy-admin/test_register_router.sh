@@ -1,5 +1,7 @@
 # Pairing-Code des Routers (aufgedruckt)
 CODE="A5GN-YMQ5"
+PUBKEYA="GAyQATIk5pLdBPYDJ61atXEGVltUbGmkrEC15Sx5izM="
+PUBKEYB="xuGLFMTf8xSr18PBzGZT4JvQngiBnIFkwjvhIpFbzEw="
 
 # router_id berechnen (wie der Router es tut)
 ROUTER_ID=$(python3 -c "
@@ -19,6 +21,6 @@ curl -s http://localhost:8000/api/router/$ROUTER_ID \
 
 curl -s http://localhost:8000/api/router/$ROUTER_ID \
   -H "Authorization: Bearer $CODE" \
-  -H "X-WG-Public-Key: $(wg pubkey < /dev/urandom | head -c 44)=" \
+  -H "X-WG-Public-Key: $PUBKEYB" \
   -H "X-Hostname: test-router-1" #| python3 -m json.tool
 

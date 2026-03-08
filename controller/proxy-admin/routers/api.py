@@ -2,7 +2,7 @@ import ipaddress
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -254,7 +254,7 @@ async def create_router(body: BackendRouterCreate, current_user: User = Depends(
     r = BackendRouter(
         **data,
         router_id=router_id,
-        pairing_status="active" if router_id else "pending",
+        device_status="uninitialized",
         owner_id=current_user.id,
         created_by_id=current_user.id,
     )
@@ -298,25 +298,33 @@ async def update_router(
     return BackendRouterOut.model_validate(result2.scalar_one())
 
 
-@api_router.patch("/routers/{router_id}/status", response_model=BackendRouterOut)
-async def set_router_status(
+@api_router.patch("/routers/{router_id}/enabled", response_model=BackendRouterOut)
+async def set_router_enabled(
     router_id: int,
-    status: str,
-    current_user: User = Depends(require_admin),
+    enabled: bool,
+    current_user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin can set router pairing_status to active or inactive."""
-    if status not in ("active", "inactive", "pending"):
-        raise HTTPException(400, "Status muss 'active', 'inactive' oder 'pending' sein")
-    result = await db.execute(_router_q().where(BackendRouter.id == router_id))
-    r = result.scalar_one_or_none()
+    """Owner or admin can enable or disable a router slot."""
+    from models.database import AsyncSessionLocal
+    # Check ownership first
+    r = (await db.execute(_router_q().where(BackendRouter.id == router_id))).scalar_one_or_none()
     if not r:
         raise HTTPException(404, "Router nicht gefunden")
-    r.pairing_status = status
-    r.updated_at = datetime.now(timezone.utc)
-    await db.commit()
-    result2 = await db.execute(_router_q().where(BackendRouter.id == router_id))
-    return BackendRouterOut.model_validate(result2.scalar_one())
+    if not current_user.is_admin and r.owner_id != current_user.id:
+        raise HTTPException(403, "Kein Zugriff")
+    # Write in a fresh session to avoid any cache issues
+    async with AsyncSessionLocal() as fresh_db:
+        await fresh_db.execute(
+            update(BackendRouter)
+            .where(BackendRouter.id == router_id)
+            .values(enabled=enabled, updated_at=datetime.now(timezone.utc))
+        )
+        await fresh_db.commit()
+    # Read back in yet another fresh session
+    async with AsyncSessionLocal() as read_db:
+        r2 = (await read_db.execute(_router_q().where(BackendRouter.id == router_id))).scalar_one()
+        return BackendRouterOut.model_validate(r2)
 
 
 @api_router.delete("/routers/{router_id}", status_code=204)

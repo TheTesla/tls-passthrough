@@ -89,7 +89,7 @@ class BackendRouterBase(BaseModel):
     description: Optional[str] = None
     port: int = 443
     protocol: str = "https"
-    is_active: bool = True
+    enabled: bool = True
 
     @field_validator("port")
     @classmethod
@@ -129,7 +129,7 @@ class BackendRouterUpdate(BaseModel):
     description: Optional[str] = None
     port: Optional[int] = None
     protocol: Optional[str] = None
-    is_active: Optional[bool] = None
+    enabled: Optional[bool] = None
 
 
 class BackendRouterAdminUpdate(BackendRouterUpdate):
@@ -142,9 +142,10 @@ class BackendRouterOut(BackendRouterBase):
     owner_id: Optional[int]
     # Set by controller from pairing_code — public identifier
     router_id: Optional[str] = None
-    pairing_status: str = "pending"
+    device_status: str = "uninitialized"  # uninitialized | ok | error
     first_seen_at: Optional[datetime] = None
     last_seen_at: Optional[datetime] = None
+    poll_interval: int = 30  # expected polling interval in seconds
     # WireGuard public key sent by the router device during polling
     wireguard_public_key: Optional[str] = None
     ip_address_id: Optional[int]
@@ -216,18 +217,15 @@ class FullSync(BaseModel):
 # ── Pairing Schemas ───────────────────────────────────────────────────────────
 
 class PairingStatusResponse(BaseModel):
-    status: str  # "pending" | "active" | "inactive"
-    # Present when active
+    enabled: bool = True
     router_id: Optional[int] = None
     router_name: Optional[str] = None
     subnet: Optional[str] = None
     ip_address: Optional[str] = None
-    # Router's own WireGuard public key (echoed back for confirmation)
     wg_public_key: Optional[str] = None
-    # WireGuard server config for the client to configure its tunnel
     server_wg_public_key: Optional[str] = None
     server_endpoint: Optional[str] = None
-    # How often to poll in seconds
+    device_status: Optional[str] = None
     poll_interval: int = 10
 
 

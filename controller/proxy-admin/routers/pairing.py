@@ -17,7 +17,7 @@ Authentication flow:
                     Authorization: Bearer {pairing_code}
      Controller verifies: HMAC(bearer) == router_id  → authenticated.
 
-  4. While pairing_status == "pending":
+  4. While router slot not yet created:
        → { status: "pending" }   (slot exists, but admin hasn't confirmed yet)
      After admin creates the router with the pairing_code:
        → { status: "active", subnet, ip, server_wg_public_key, server_endpoint, wg_public_key }
@@ -71,7 +71,7 @@ async def _build_active_response(
     )).scalar_one_or_none()
 
     return PairingStatusResponse(
-        status="active",
+        enabled=router.enabled,
         router_id=router.id,
         router_name=router.name,
         subnet=ip.subnet if ip else None,
@@ -79,7 +79,8 @@ async def _build_active_response(
         server_wg_public_key=cfg.server_wg_public_key if cfg else None,
         server_endpoint=cfg.server_endpoint if cfg else None,
         wg_public_key=router.wireguard_public_key,
-        poll_interval=30,
+        poll_interval=router.poll_interval,
+        device_status=router.device_status,
     )
 
 
@@ -126,28 +127,38 @@ async def router_poll(
     now = datetime.now(timezone.utc)
 
     if router is None:
-        # Credentials valid but no slot exists yet — admin hasn't created it
+        # Credentials valid but no slot exists yet
         logger.info(f"Poll from unknown router_id={router_id} (not yet registered)")
-        return PairingStatusResponse(status="pending", poll_interval=10)
+        return PairingStatusResponse(poll_interval=10)
 
-    # Update heartbeat + optional fields
+    # Update heartbeat
     if router.first_seen_at is None:
         router.first_seen_at = now
         logger.info(f"First contact from router '{router.name}' (id={router.id})")
     router.last_seen_at = now
-    if wg_public_key and router.wireguard_public_key != wg_public_key:
-        router.wireguard_public_key = wg_public_key
-        logger.info(f"WG key updated for router '{router.name}'")
+
+    # Validate WG key and update device_status
+    if wg_public_key:
+        import re as _re
+        if _re.match(r"^[A-Za-z0-9+/]{43}=$", wg_public_key):
+            if router.wireguard_public_key != wg_public_key:
+                router.wireguard_public_key = wg_public_key
+                logger.info(f"WG key updated for router '{router.name}'")
+            router.device_status = "ok"
+        else:
+            router.device_status = "error"
+            logger.warning(f"Invalid WG key from router '{router.name}': {wg_public_key!r}")
+    elif router.device_status == "uninitialized":
+        pass  # no key sent yet — stay uninitialized
+    # else: keep existing device_status
+
     await db.commit()
-    await db.refresh(router)
-    logger.info(f"Heartbeat router='{router.name}' first_seen={router.first_seen_at} last_seen={router.last_seen_at}")
+    # Expire and reload to pick up any external changes (e.g. enabled toggled via admin)
+    db.expire_all()
+    router = (await db.execute(
+        select(BackendRouter).where(BackendRouter.router_id == router_id)
+    )).scalar_one()
+    logger.info(f"Heartbeat router='{router.name}' device_status={router.device_status}")
 
-    if router.pairing_status == "pending":
-        # Slot exists but admin hasn't activated it yet
-        return PairingStatusResponse(status="pending", poll_interval=10)
-
-    if router.pairing_status == "inactive":
-        return PairingStatusResponse(status="inactive", poll_interval=60)
-
-    # Active — send full config
+    # Send full config
     return await _build_active_response(db, router)

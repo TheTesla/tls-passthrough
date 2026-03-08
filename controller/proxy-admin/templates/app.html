@@ -910,7 +910,6 @@
               <th>IP-Adresse</th>
               <th>Port / Proto</th>
               <th>Domains</th>
-              <th>Status</th>
               <th>Aktionen</th>
             </tr>
           </thead>
@@ -1551,28 +1550,43 @@ function renderRouters() {
     const ip = r.ip_address;
     const domainCount = state.domains.filter(d => d.backend_router_id === r.id).length;
     const canModify = isAdmin || r.owner_id === uid;
-    const pairingBadge = {
-      active:   `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:#1a3a1a;color:var(--green)">● Aktiv</span>`,
-      pending:  `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:var(--surface2);color:var(--muted)">○ Ausstehend</span>`,
-      inactive: `<span style="font-size:10px;padding:2px 8px;border-radius:20px;background:#3a1a1a;color:var(--accent2)">✕ Inaktiv</span>`,
-    }[r.pairing_status] || '';
-    // "Letzter Kontakt" — show never/first_seen/last_seen
+    // Compute display status from enabled + device_status + timing
+    const pollMs  = (r.poll_interval || 30) * 1000;
+    const graceMs = pollMs * 2; // allow 2× interval before Störung
+    const lsUtc   = r.last_seen_at
+      ? (!r.last_seen_at.endsWith('Z') ? r.last_seen_at + 'Z' : r.last_seen_at)
+      : null;
+    const msSinceSeen = lsUtc ? (Date.now() - new Date(lsUtc)) : Infinity;
+
+    let displayStatus, badgeStyle;
+    if (!r.enabled) {
+      displayStatus = 'Inaktiv';  badgeStyle = 'background:var(--surface2);color:var(--muted)';
+    } else if (r.device_status === 'error') {
+      displayStatus = 'Fehler';   badgeStyle = 'background:#3a1a1a;color:#ff6b6b';
+    } else if (!r.first_seen_at) {
+      displayStatus = 'Neu';      badgeStyle = 'background:var(--surface2);color:var(--muted)';
+    } else if (msSinceSeen <= graceMs) {
+      displayStatus = 'Aktiv';    badgeStyle = 'background:#1a3a1a;color:var(--green)';
+    } else {
+      displayStatus = 'Störung';  badgeStyle = 'background:#3a2800;color:#ffaa00';
+    }
+    const pairingBadge = `<span style="font-size:10px;padding:2px 8px;border-radius:20px;${badgeStyle}">${displayStatus}</span>`;
+
+    // Contact line — "gerade eben" while within expected poll interval
     let contactLine = '';
     if (!r.first_seen_at) {
-      contactLine = `<div style="font-size:10px;color:var(--accent2);margin-top:3px">Noch nie verbunden</div>`;
-    } else if (!r.last_seen_at) {
-      contactLine = `<div style="font-size:10px;color:var(--muted);margin-top:3px">Erstkontakt: ${timeSince(r.first_seen_at)}</div>`;
+      contactLine = `<div style="font-size:10px;color:var(--muted);margin-top:3px">Noch kein Kontakt</div>`;
     } else {
-      const lsUtc = r.last_seen_at && !r.last_seen_at.endsWith("Z") ? r.last_seen_at + "Z" : r.last_seen_at;
-      const stale = (Date.now() - new Date(lsUtc)) > 120000; // >2min = stale
-      const color = stale ? 'var(--accent2)' : 'var(--muted)';
-      contactLine = `<div style="font-size:10px;color:${color};margin-top:3px" title="Erstkontakt: ${r.first_seen_at}">Zuletzt: ${timeSince(r.last_seen_at)}</div>`;
+      const justNow = msSinceSeen < pollMs;
+      const color   = msSinceSeen > graceMs ? '#ffaa00' : 'var(--muted)';
+      const timeStr = justNow ? 'gerade eben' : timeSince(r.last_seen_at);
+      contactLine = `<div style="font-size:10px;color:${color};margin-top:3px" title="Erstkontakt: ${r.first_seen_at}">Zuletzt: ${timeStr}</div>`;
     }
     const wgKey = pairingBadge + contactLine;
-    const toggleBtn = isAdmin
-      ? (r.pairing_status === 'active'
-          ? `<button class="btn btn-ghost btn-sm" title="Deaktivieren" onclick="setRouterStatus(${r.id},'inactive')">⏸</button>`
-          : `<button class="btn btn-ghost btn-sm" title="Aktivieren" onclick="setRouterStatus(${r.id},'active')">▶</button>`)
+    const toggleBtn = canModify
+      ? (r.enabled
+          ? `<button class="btn btn-ghost btn-sm" title="Deaktivieren" onclick="setRouterEnabled(${r.id},false)">⏸</button>`
+          : `<button class="btn btn-ghost btn-sm" title="Aktivieren" onclick="setRouterEnabled(${r.id},true)">▶</button>`)
       : '';
     const editBtns = canModify
       ? `<div class="actions">
@@ -1591,7 +1605,6 @@ function renderRouters() {
       <td>${ip ? `<span class="badge-ip">${esc(ip.ip_address)}</span><div style="font-size:10px;color:var(--muted);margin-top:2px">${esc(ip.label)}</div>` : '<span style="color:var(--muted)">–</span>'}</td>
       <td><span class="badge-proto">${esc(r.protocol)}</span> <span style="color:var(--text2)">${r.port}</span></td>
       <td><span style="color:var(--text2)">${domainCount}</span></td>
-      <td>${statusBadge(r.is_active)}</td>
       <td>${editBtns}</td>
     </tr>`;
   }).join('');
@@ -1783,7 +1796,7 @@ function _showRouterModal(r) {
     document.getElementById('router-desc').value = r.description || '';
     document.getElementById('router-port').value = r.port;
     document.getElementById('router-protocol').value = r.protocol;
-    document.getElementById('router-active').checked = r.is_active;
+    document.getElementById('router-active').checked = r.enabled !== false;
     if (isAdmin) document.getElementById('router-ip').value = r.ip_address_id || '';
     // Edit mode: hide pairing input, show router_id + wg key read-only
     document.getElementById('pairing-code-group').style.display = 'none';
@@ -1863,7 +1876,7 @@ async function saveRouter() {
     description: document.getElementById('router-desc').value.trim() || null,
     port: parseInt(document.getElementById('router-port').value),
     protocol: document.getElementById('router-protocol').value,
-    is_active: document.getElementById('router-active').checked,
+    enabled: document.getElementById('router-active').checked,
   };
   // Only send pairing_code when creating a new router
   if (!id) {
@@ -1894,13 +1907,13 @@ async function saveRouter() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function setRouterStatus(id, status) {
+async function setRouterEnabled(id, enabled) {
   try {
-    const updated = await api('PATCH', `/routers/${id}/status?status=${status}`, {});
+    const updated = await api('PATCH', `/routers/${id}/enabled?enabled=${enabled}`, {});
     const idx = state.routers.findIndex(x => x.id === id);
     if (idx !== -1) state.routers[idx] = updated;
     renderRouters();
-    toast(status === 'active' ? 'Router aktiviert' : 'Router deaktiviert');
+    toast(enabled ? 'Router aktiviert' : 'Router deaktiviert');
   } catch(e) { toast(e.message, 'error'); }
 }
 
