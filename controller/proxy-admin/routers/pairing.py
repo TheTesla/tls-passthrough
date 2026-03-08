@@ -153,12 +153,11 @@ async def router_poll(
     # else: keep existing device_status
 
     await db.commit()
-    # Expire and reload to pick up any external changes (e.g. enabled toggled via admin)
-    db.expire_all()
-    router = (await db.execute(
-        select(BackendRouter).where(BackendRouter.router_id == router_id)
-    )).scalar_one()
-    logger.info(f"Heartbeat router='{router.name}' device_status={router.device_status}")
-
-    # Send full config
-    return await _build_active_response(db, router)
+    # Fresh session to pick up any external changes (e.g. enabled toggled by owner)
+    from models.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as fresh:
+        router = (await fresh.execute(
+            select(BackendRouter).where(BackendRouter.router_id == router_id)
+        )).scalar_one()
+        logger.info(f"Heartbeat router='{router.name}' enabled={router.enabled} device_status={router.device_status}")
+        return await _build_active_response(fresh, router)

@@ -1162,13 +1162,7 @@
           </select>
         </div>
       </div>
-      <div class="toggle-row">
-        <span class="toggle-label">Aktiv</span>
-        <label class="toggle">
-          <input type="checkbox" id="router-active" checked>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
+
       <!-- Admin-only: IP assignment -->
       <div id="router-ip-section" style="display:none;border-top:1px solid var(--border);padding-top:14px;margin-top:4px">
         <div style="font-size:10px;color:var(--accent);letter-spacing:.08em;text-transform:uppercase;margin-bottom:8px">Admin: IP-Zuordnung</div>
@@ -1559,14 +1553,12 @@ function renderRouters() {
     const msSinceSeen = lsUtc ? (Date.now() - new Date(lsUtc)) : Infinity;
 
     let displayStatus, badgeStyle;
-    if (!r.enabled) {
-      displayStatus = 'Inaktiv';  badgeStyle = 'background:var(--surface2);color:var(--muted)';
-    } else if (r.device_status === 'error') {
+    if (r.device_status === 'error') {
       displayStatus = 'Fehler';   badgeStyle = 'background:#3a1a1a;color:#ff6b6b';
     } else if (!r.first_seen_at) {
       displayStatus = 'Neu';      badgeStyle = 'background:var(--surface2);color:var(--muted)';
     } else if (msSinceSeen <= graceMs) {
-      displayStatus = 'Aktiv';    badgeStyle = 'background:#1a3a1a;color:var(--green)';
+      displayStatus = 'Verfügbar'; badgeStyle = 'background:#1a3a1a;color:var(--green)';
     } else {
       displayStatus = 'Störung';  badgeStyle = 'background:#3a2800;color:#ffaa00';
     }
@@ -1583,14 +1575,15 @@ function renderRouters() {
       contactLine = `<div style="font-size:10px;color:${color};margin-top:3px" title="Erstkontakt: ${r.first_seen_at}">Zuletzt: ${timeStr}</div>`;
     }
     const wgKey = pairingBadge + contactLine;
-    const toggleBtn = canModify
-      ? (r.enabled
-          ? `<button class="btn btn-ghost btn-sm" title="Deaktivieren" onclick="setRouterEnabled(${r.id},false)">⏸</button>`
-          : `<button class="btn btn-ghost btn-sm" title="Aktivieren" onclick="setRouterEnabled(${r.id},true)">▶</button>`)
+    const toggleSwitch = canModify
+      ? `<label class="toggle" style="margin:0" title="${r.enabled ? 'Deaktivieren' : 'Aktivieren'}">
+           <input type="checkbox" ${r.enabled ? 'checked' : ''} onchange="setRouterEnabled(${r.id}, this.checked)">
+           <span class="toggle-slider"></span>
+         </label>`
       : '';
     const editBtns = canModify
-      ? `<div class="actions">
-           ${toggleBtn}
+      ? `<div class="actions" style="align-items:center">
+           ${toggleSwitch}
            <button class="btn btn-ghost btn-sm" onclick="editRouter(${r.id})">✎</button>
            <button class="btn btn-danger btn-sm" onclick="deleteRouter(${r.id})">✕</button>
          </div>`
@@ -1796,8 +1789,7 @@ function _showRouterModal(r) {
     document.getElementById('router-desc').value = r.description || '';
     document.getElementById('router-port').value = r.port;
     document.getElementById('router-protocol').value = r.protocol;
-    document.getElementById('router-active').checked = r.enabled !== false;
-    if (isAdmin) document.getElementById('router-ip').value = r.ip_address_id || '';
+        if (isAdmin) document.getElementById('router-ip').value = r.ip_address_id || '';
     // Edit mode: hide pairing input, show router_id + wg key read-only
     document.getElementById('pairing-code-group').style.display = 'none';
     const hasKey = r.wireguard_public_key || r.router_id;
@@ -1814,7 +1806,6 @@ function _showRouterModal(r) {
     document.getElementById('router-pairing-code').value = '';
     document.getElementById('router-port').value = 443;
     document.getElementById('router-protocol').value = 'https';
-    document.getElementById('router-active').checked = true;
     if (isAdmin) document.getElementById('router-ip').value = '';
     // New router: show pairing input
     document.getElementById('pairing-code-group').style.display = '';
@@ -1876,7 +1867,6 @@ async function saveRouter() {
     description: document.getElementById('router-desc').value.trim() || null,
     port: parseInt(document.getElementById('router-port').value),
     protocol: document.getElementById('router-protocol').value,
-    enabled: document.getElementById('router-active').checked,
   };
   // Only send pairing_code when creating a new router
   if (!id) {
